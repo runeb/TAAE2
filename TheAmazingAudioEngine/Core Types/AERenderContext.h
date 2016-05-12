@@ -51,7 +51,10 @@ typedef struct {
     
     //! The current audio timestamp
     const AudioTimeStamp * _Nonnull timestamp;
-    
+
+    //! The audio timestamp at render start
+    const AudioTimeStamp * _Nonnull startTimestamp;
+
     //! Whether rendering is offline (faster than realtime)
     BOOL offlineRendering;
     
