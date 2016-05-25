@@ -24,7 +24,24 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
+#ifdef __cplusplus
+extern "C" {
+#endif
+    
+#import <Foundation/Foundation.h>
+
+//! Batch update block
+typedef void (^AEManagedValueUpdateBlock)();
+
+/*!
+ * Release block
+ *
+ * @param value Original value provided
+ */
+typedef void (^AEManagedValueReleaseBlock)(void * _Nonnull value);
+
+//! Release notification block
+typedef void (^AEManagedValueReleaseNotificationBlock)();
 
 /*!
  * Managed value
@@ -58,12 +75,15 @@
  *
  * @param block Atomic update block
  */
-+ (void)performAtomicBatchUpdate:(void(^ _Nonnull)())block;
++ (void)performAtomicBatchUpdate:(AEManagedValueUpdateBlock _Nonnull)block;
 
 /*!
- * Get access to the value on the realtime thread
+ * Get access to the value on the realtime audio thread
  *
  *  The object or buffer returned is guaranteed to remain valid until the next call to this function.
+ *
+ *  Important: Only call this function on the audio thread. If you call this on the main thread, you
+ *  will see sporadic crashes on the audio thread.
  *
  * @param managedValue The instance
  * @return The value
@@ -79,6 +99,9 @@ void * _Nullable AEManagedValueGetValue(__unsafe_unretained AEManagedValue * _No
  *
  *  After you call this function, any updates made within the loop bassed to performAtomicBatchUpdate:
  *  become available on the render thread.
+ *
+ *  Important: Only call this function on the audio thread. If you call this on the main thread, you
+ *  will see sporadic crashes on the audio thread.
  */
 void AEManagedValueCommitPendingAtomicUpdates();
 
@@ -99,11 +122,15 @@ void AEManagedValueCommitPendingAtomicUpdates();
  * Block to perform when deleting old items, on main thread. If not specified, will simply use 
  * free() to dispose values set via pointerValue, or CFRelease() to dispose values set via objectValue.
  */
-@property (nonatomic, copy) void (^ _Nullable releaseBlock)(void * _Nonnull value);
+@property (nonatomic, copy) AEManagedValueReleaseBlock _Nullable releaseBlock;
 
 /*!
  * Block for release notifications. Use this to be informed when an old value has been released.
  */
-@property (nonatomic, copy) void (^ _Nullable releaseNotificationBlock)(void);
+@property (nonatomic, copy) AEManagedValueReleaseNotificationBlock _Nullable releaseNotificationBlock;
 
 @end
+
+#ifdef __cplusplus
+}
+#endif

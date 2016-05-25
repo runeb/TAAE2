@@ -24,11 +24,11 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#import <Foundation/Foundation.h>
 
 typedef uint64_t AEHostTicks;
 typedef double AESeconds;
@@ -49,7 +49,7 @@ AESeconds AECurrentTimeInSeconds(void);
  * @param seconds The time in seconds
  * @return The time in host ticks
  */
-AEHostTicks AEHostTicksFromSeconds(double AESeconds);
+AEHostTicks AEHostTicksFromSeconds(AESeconds seconds);
 
 /*!
  * Convert time in host ticks to seconds

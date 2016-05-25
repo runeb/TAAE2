@@ -32,6 +32,8 @@
 #import "AETypes.h"
 #import "AEAudioBufferListUtilities.h"
 #import "AEDSPUtilities.h"
+#import "AEManagedValue.h"
+#import "AEMainThreadEndpoint.h"
 
 static const UInt32 kNoValue = -1;
 
@@ -53,7 +55,7 @@ static const UInt32 kNoValue = -1;
     UInt32      _remainingMicrofadeOutFrames;
 }
 @property (nonatomic, strong, readwrite) NSURL * url;
-@property (nonatomic, strong) NSTimer * pollTimer;
+@property (nonatomic, strong) AEManagedValue * mainThreadEndpointValue;
 @property (nonatomic, copy) void(^beginBlock)();
 @end
 
@@ -79,13 +81,12 @@ static const UInt32 kNoValue = -1;
     self.processFunction = AEAudioFilePlayerModuleProcess;
     self.isActiveFunction = AEAudioFilePlayerModuleGetPlaying;
     
+    self.mainThreadEndpointValue = [AEManagedValue new];
+    
     return self;
 }
 
 - (void)dealloc {
-    if ( self.pollTimer ) {
-        [self.pollTimer invalidate];
-    }
     if ( _audioFile ) {
         AudioFileClose(_audioFile);
     }
@@ -94,11 +95,10 @@ static const UInt32 kNoValue = -1;
 - (void)setCompletionBlock:(void (^)())completionBlock {
     _completionBlock = completionBlock;
     
-    if ( _completionBlock && !self.pollTimer && !self.loop ) {
-        [self schedulePollTimer];
-    } else if ( !_completionBlock && !self.beginBlock && self.pollTimer ) {
-        [self.pollTimer invalidate];
-        self.pollTimer = nil;
+    if ( _completionBlock && !self.mainThreadEndpointValue.objectValue && !self.loop ) {
+        [self setupMainThreadEndpoint];
+    } else if ( !_completionBlock && !self.beginBlock && self.mainThreadEndpointValue.objectValue ) {
+        self.mainThreadEndpointValue.objectValue = nil;
     }
 }
 
@@ -106,17 +106,29 @@ static const UInt32 kNoValue = -1;
     [self playAtTime:time beginBlock:nil];
 }
 
-- (void)playAtTime:(AEHostTicks)time beginBlock:(void(^)())block {
-    _remainingMicrofadeOutFrames = kNoValue;
+- (void)playAtTime:(AEHostTicks)time beginBlock:(AEAudioFilePlayerModuleBlock)block {
+#ifdef DEBUG
+    if ( time ) {
+        AEHostTicks now = AECurrentTimeInHostTicks();
+        if ( time < now-AEHostTicksFromSeconds(0.5) ) {
+            NSLog(@"%@: Start time is %lf seconds in the past", self, AESecondsFromHostTicks(now-time));
+        } else if ( time > now+AEHostTicksFromSeconds(60*60) ) {
+            NSLog(@"%@: Start time is %lf seconds in the future", self, AESecondsFromHostTicks(time-now));
+        }
+    }
+#endif
     
+    _remainingMicrofadeOutFrames = kNoValue;
+    _remainingMicrofadeInFrames = _microfadeFrames;
     _startTime = time;
+    
     if ( !_playing ) {
         self.beginBlock = block;
         _anchorTime = 0;
         _playing = YES;
         
-        if ( (self.beginBlock || (self.completionBlock && !self.loop)) && !self.pollTimer ) {
-            [self schedulePollTimer];
+        if ( (self.beginBlock || (self.completionBlock && !self.loop)) && !self.mainThreadEndpointValue.objectValue ) {
+            [self setupMainThreadEndpoint];
         }
         
         if ( !_sequenceScheduled ) {
@@ -133,13 +145,12 @@ static const UInt32 kNoValue = -1;
         _sequenceScheduled = NO;
         _playing = NO;
         if ( self.completionBlock ) self.completionBlock();
-        if ( self.pollTimer ) {
-            [self.pollTimer invalidate];
-            self.pollTimer = nil;
+        if ( self.mainThreadEndpointValue.objectValue ) {
+            self.mainThreadEndpointValue.objectValue = nil;
         }
     } else {
-        if ( !self.pollTimer ) {
-            [self schedulePollTimer];
+        if ( !self.mainThreadEndpointValue.objectValue ) {
+            [self setupMainThreadEndpoint];
         }
         _remainingMicrofadeOutFrames = _microfadeFrames;
     }
@@ -197,8 +208,8 @@ static const UInt32 kNoValue = -1;
 - (void)setLoop:(BOOL)loop {
     _loop = loop;
     
-    if ( !_loop && self.completionBlock && !self.pollTimer ) {
-        [self schedulePollTimer];
+    if ( !_loop && self.completionBlock && !self.mainThreadEndpointValue.objectValue ) {
+        [self setupMainThreadEndpoint];
     }
 }
 
@@ -221,32 +232,29 @@ BOOL AEAudioFilePlayerModuleGetPlaying(__unsafe_unretained AEAudioFilePlayerModu
     return THIS->_playing;
 }
 
-- (void)schedulePollTimer {
-    AEAudioFilePlayerModuleWeakProxy * proxy = [AEAudioFilePlayerModuleWeakProxy alloc];
-    proxy.target = self;
-    self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:0.01 target:proxy selector:@selector(pollTimeout)
-                                                                userInfo:nil repeats:YES];
-}
-
-- (void)pollTimeout {
-    if ( self.beginBlock && _anchorTime != 0 ) {
-        self.beginBlock();
-        self.beginBlock = nil;
-        if ( !self.completionBlock || self.loop ) {
-            [self.pollTimer invalidate];
-            self.pollTimer = nil;
+- (void)setupMainThreadEndpoint {
+    __weak AEAudioFilePlayerModule * weakSelf = self;
+    self.mainThreadEndpointValue.objectValue
+            = [[AEMainThreadEndpoint alloc] initWithHandler:^(const void * data, size_t length) {
+        AEAudioFilePlayerModule * self = weakSelf;
+        
+        if ( self.beginBlock && _anchorTime != 0 ) {
+            self.beginBlock();
+            self.beginBlock = nil;
+            if ( !self.completionBlock || self.loop ) {
+                self.mainThreadEndpointValue.objectValue = nil;
+            }
         }
-    }
-    
-    if ( _stopEventScheduled ) {
-        _stopEventScheduled = NO;
-        AECheckOSStatus(AudioUnitReset(self.audioUnit, kAudioUnitScope_Global, 0), "AudioUnitReset");
-        _sequenceScheduled = NO;
-        _playing = NO;
-        if ( self.completionBlock ) self.completionBlock();
-        [self.pollTimer invalidate];
-        self.pollTimer = nil;
-    }
+        
+        if ( _stopEventScheduled ) {
+            _stopEventScheduled = NO;
+            AECheckOSStatus(AudioUnitReset(self.audioUnit, kAudioUnitScope_Global, 0), "AudioUnitReset");
+            _sequenceScheduled = NO;
+            _playing = NO;
+            if ( self.completionBlock ) self.completionBlock();
+            self.mainThreadEndpointValue.objectValue = nil;
+        }
+    }];
 }
 
 - (BOOL)loadAudioFileWithURL:(NSURL*)url error:(NSError**)error {
@@ -418,7 +426,6 @@ BOOL AEAudioFilePlayerModuleGetPlaying(__unsafe_unretained AEAudioFilePlayerModu
     _playheadOffset = position - start;
     _anchorTime = 0;
     _sequenceScheduled = YES;
-    _remainingMicrofadeInFrames = _microfadeFrames;
 }
 
 static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayerModule * THIS,
@@ -478,15 +485,14 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
     UInt32 frames = context->frames;
     UInt32 silentFrames = startTime && startTime > context->timestamp->mHostTime
         ? round(AESecondsFromHostTicks(startTime - context->timestamp->mHostTime) * context->sampleRate) : 0;
-    AEAudioBufferListCopyOnStack(scratchAudioBufferList, abl, silentFrames);
+    AEAudioBufferListCopyOnStack(mutableAbl, abl, silentFrames);
     AudioTimeStamp adjustedTime = *context->timestamp;
     
     if ( silentFrames > 0 ) {
         // Start time is offset into this buffer - silence beginning of buffer
         AEAudioBufferListSilence(abl, 0, silentFrames);
-        
         // Point buffer list to remaining frames
-        abl = scratchAudioBufferList;
+        abl = mutableAbl;
         frames -= silentFrames;
         adjustedTime.mHostTime = startTime;
         adjustedTime.mSampleTime += silentFrames;
@@ -494,8 +500,7 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
     
     // Render
     AudioUnitRenderActionFlags flags = 0;
-    AEAudioBufferListCopyOnStack(mutableAbl, abl, 0);
-    OSStatus result = AudioUnitRender(audioUnit, &flags, context->timestamp, 0, frames, mutableAbl);
+    OSStatus result = AudioUnitRender(audioUnit, &flags, &adjustedTime, 0, frames, mutableAbl);
     if ( !AECheckOSStatus(result, "AudioUnitRender") ) {
         AEAudioBufferListSilence(abl, 0, context->frames);
         return;
@@ -536,15 +541,20 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
         }
     } else if ( !THIS->_loop && playheadInRegionAtBufferEnd >= regionLength-THIS->_microfadeFrames ) {
         // Fade out (ended)
-        UInt32 offset = MIN(regionLength-THIS->_microfadeFrames - playheadInRegion, frames);
-        UInt32 microfadeFrames = MIN(playheadInRegionAtBufferEnd - regionLength - THIS->_microfadeFrames, THIS->_microfadeFrames);
+        UInt32 microfadeStartPoint = regionLength - THIS->_microfadeFrames;
+        UInt32 offset = microfadeStartPoint > playheadInRegion ? MIN(microfadeStartPoint - playheadInRegion, frames) : 0;
+        UInt32 microfadeFrames = MIN(playheadInRegionAtBufferEnd - microfadeStartPoint, THIS->_microfadeFrames);
         microfadeFrames = MIN(microfadeFrames, frames);
         if ( microfadeFrames > 0 ) {
-            float start = MIN(playheadInRegionAtBufferEnd - regionLength - THIS->_microfadeFrames, THIS->_microfadeFrames)
-                            / THIS->_microfadeFrames;
+            float start = 1.0 - ((float)MIN((playheadInRegion+offset) - microfadeStartPoint, THIS->_microfadeFrames)
+                                 / THIS->_microfadeFrames);
             float step = -1.0 / (double)THIS->_microfadeFrames;
-            AEAudioBufferListCopyOnStack(offsetAbl, abl, offset);
-            AEDSPApplyRamp(offsetAbl, &start, step, microfadeFrames);
+            if ( offset > 0 ) {
+                AEAudioBufferListCopyOnStack(offsetAbl, abl, offset);
+                AEDSPApplyRamp(offsetAbl, &start, step, microfadeFrames);
+            } else {
+                AEDSPApplyRamp(abl, &start, step, microfadeFrames);
+            }
         }
         if ( playheadInRegionAtBufferEnd >= regionLength ) {
             UInt32 finalFrames = MIN(regionLength - playheadInRegion, frames);
@@ -563,6 +573,11 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
         THIS->_sequenceScheduled = NO;
         THIS->_stopEventScheduled = YES;
         THIS->_playing = NO;
+        __unsafe_unretained AEMainThreadEndpoint * endpoint =
+            (__bridge AEMainThreadEndpoint *)AEManagedValueGetValue(THIS->_mainThreadEndpointValue);
+        if ( endpoint ) {
+            AEMainThreadEndpointSend(endpoint, NULL, 0);
+        }
     } else {
         // Update the playhead
         double regionStartTimeAtFileRate = THIS->_regionStartTime * THIS->_fileSampleRate;
@@ -570,7 +585,16 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
         THIS->_playhead = regionStartTimeAtFileRate +
             fmod(THIS->_playheadOffset + (playheadInRegionAtBufferEnd * (THIS->_fileSampleRate / context->sampleRate)),
                  regionLengthAtFileRate);
+        BOOL wasStarted = THIS->_anchorTime != 0;
         THIS->_anchorTime = hostTimeAtBufferEnd;
+        
+        if ( !wasStarted ) {
+            __unsafe_unretained AEMainThreadEndpoint * endpoint =
+                (__bridge AEMainThreadEndpoint *)AEManagedValueGetValue(THIS->_mainThreadEndpointValue);
+            if ( endpoint ) {
+                AEMainThreadEndpointSend(endpoint, NULL, 0);
+            }
+        }
     }
 }
 

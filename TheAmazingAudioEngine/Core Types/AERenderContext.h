@@ -24,13 +24,13 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-@import AudioToolbox;
-#import "AEBufferStack.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import "AEBufferStack.h"
 
 /*!
  * Render context

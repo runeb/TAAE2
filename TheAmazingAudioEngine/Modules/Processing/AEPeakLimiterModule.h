@@ -24,8 +24,11 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-
+#ifdef __cplusplus
+extern "C" {
+#endif
+    
+#import <Foundation/Foundation.h>
 #import "AEAudioUnitModule.h"
 
 @interface AEPeakLimiterModule : AEAudioUnitModule
@@ -42,3 +45,7 @@
 @property (nonatomic) double preGain;
 
 @end
+
+#ifdef __cplusplus
+}
+#endif

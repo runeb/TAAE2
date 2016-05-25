@@ -28,7 +28,7 @@
 #import "AEMainThreadEndpoint.h"
 #import "AEAudioThreadEndpoint.h"
 
-AEArgument AEArgumentNone = {NULL, 0};
+AEArgument AEArgumentNone = {NO, NULL, 0};
 
 typedef enum {
     AEMessageQueueMainThreadMessage,
@@ -138,19 +138,11 @@ typedef struct {
     return self;
 }
 
-- (BOOL)startPolling {
-    return [self.mainThreadEndpoint startPolling];
-}
-
-- (void)endPolling {
-    [self.mainThreadEndpoint endPolling];
-}
-
-- (void)performBlockOnAudioThread:(void (^)())block {
+- (void)performBlockOnAudioThread:(AEMessageQueueBlock)block {
     [self performBlockOnAudioThread:block completionBlock:nil];
 }
 
-- (void)performBlockOnAudioThread:(void (^)())block completionBlock:(void (^)())completionBlock {
+- (void)performBlockOnAudioThread:(AEMessageQueueBlock)block completionBlock:(AEMessageQueueBlock)completionBlock {
     // Prepare message
     audio_thread_message_t message = {
         .type = AEMessageQueueAudioThreadMessage,

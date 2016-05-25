@@ -24,13 +24,13 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-@import AudioToolbox;
-#import "AEAudioBufferListUtilities.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import "AEAudioBufferListUtilities.h"
 
 /*!
  * Scale values in a buffer list by some gain value
@@ -50,6 +50,20 @@ void AEDSPApplyGain(const AudioBufferList * bufferList, float gain, UInt32 frame
  * @param frames Length in frames
  */
 void AEDSPApplyRamp(const AudioBufferList * bufferList, float * start, float step, UInt32 frames);
+
+/*!
+ * Apply an equal-power ramp to values in a buffer list
+ *
+ *  This uses a quarter-cycle cosine ramp envelope to preserve the power level, useful when 
+ *  crossfading two signals without causing a bump in gain in the middle of the fade.
+ *
+ * @param bufferList Audio buffer list, in non-interleaved float format
+ * @param start Starting gain (power ratio) on input; final gain value on output
+ * @param step Amount per frame to advance gain
+ * @param frames Length in frames
+ * @param scratch A scratch buffer to use, or NULL to use an internal buffer. Not thread-safe if the latter is used.
+ */
+void AEDSPApplyEqualPowerRamp(const AudioBufferList * bufferList, float * start, float step, UInt32 frames, float * scratch);
 
 /*!
  * Scale values in a buffer list by some gain value, with smoothing to avoid discontinuities
@@ -78,7 +92,7 @@ void AEDSPApplyGainSmoothedMono(float * buffer, float targetGain, float * curren
  *  This function applies gains to the given buffer to affect volume and balance, with a smoothing ramp
  *  applied to avoid discontinuities.
  *
- * @param buffer Audio buffer list, in non-interleaved float format
+ * @param bufferList Audio buffer list, in non-interleaved float format
  * @param targetVolume The target volume (power ratio)
  * @param currentVolume On input, the current volume; on output, the new volume. Store this and pass it
  *  back to this function on successive calls for a smooth ramp. If NULL, no smoothing will be applied.
@@ -108,11 +122,23 @@ void AEDSPApplyVolumeAndBalance(const AudioBufferList * bufferList, float target
  * @param gain1 Gain factor for first buffer list (power ratio)
  * @param gain2 Gain factor for second buffer list
  * @param monoToStereo Whether to double mono tracks to stereo, if output is stereo
+ * @param frames Length in frames, or 0 for entire buffer (based on mDataByteSize fields)
  * @param output Output buffer list (may be same as bufferList1 or bufferList2)
  */
 void AEDSPMix(const AudioBufferList * bufferList1, const AudioBufferList * bufferList2, float gain1, float gain2,
-              BOOL monoToStereo, const AudioBufferList * output);
+              BOOL monoToStereo, UInt32 frames, const AudioBufferList * output);
 
+/*!
+ * Mix two single mono buffers
+ *
+ * @param buffer1 First buffer
+ * @param buffer2 Second buffer
+ * @param gain1 Gain factor for first buffer (power ratio)
+ * @param gain2 Gain factor for second buffer
+ * @param frames Number of frames
+ * @param output Output buffer
+ */
+void AEDSPMixMono(const float * buffer1, const float * buffer2, float gain1, float gain2, UInt32 frames, float * output);
 
 /*!
  * Silence an audio buffer list (zero out frames)

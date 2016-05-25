@@ -24,16 +24,32 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-@import AudioToolbox;
-#import "AETime.h"
-#import "AETypes.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import "AETime.h"
+#import "AETypes.h"
+
 @class AERenderer;
+
+/*!
+ * Completion block
+ *
+ * @param error The error, if one occurred while writing
+ */
+typedef void (^AEAudioFileOutputCompletionBlock)(NSError * _Nullable error);
+
+/*
+ * Condition block
+ *
+ *  For use with @link AEAudioFileOutput::runUntilCondition:completionBlock: runUntilCondition:completionBlock: @endlink
+ *
+ * @returns Whether to stop (YES) or continue (NO)
+ */
+typedef BOOL (^AEAudioFileOutputConditionBlock)();
 
 /*!
  * File output
@@ -73,7 +89,7 @@ extern "C" {
  * @param duration Duration to run for, in seconds
  * @param completionBlock Block to perform on main thread when render has completed
  */
-- (void)runForDuration:(AESeconds)duration completionBlock:(void(^ _Nonnull)())completionBlock;
+- (void)runForDuration:(AESeconds)duration completionBlock:(AEAudioFileOutputCompletionBlock _Nonnull)completionBlock;
 
 /*!
  * Run offline rendering until a given condition
@@ -86,7 +102,8 @@ extern "C" {
  *  render cycle to determine whether recording should stop. Return YES to stop; NO to continue.
  * @param completionBlock Block to perform on main thread when render has completed
  */
-- (void)runUntilCondition:(BOOL(^ _Nonnull)())conditionBlock completionBlock:(void(^ _Nonnull)())completionBlock;
+- (void)runUntilCondition:(AEAudioFileOutputConditionBlock _Nonnull)conditionBlock
+          completionBlock:(AEAudioFileOutputCompletionBlock _Nonnull)completionBlock;
 
 /*!
  * Finish writing the file

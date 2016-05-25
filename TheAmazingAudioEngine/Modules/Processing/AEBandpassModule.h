@@ -24,7 +24,11 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#import <Foundation/Foundation.h>
 #import "AEAudioUnitModule.h"
 
 @interface AEBandpassModule : AEAudioUnitModule
@@ -38,3 +42,7 @@
 @property (nonatomic) double bandwidth;
 
 @end
+
+#ifdef __cplusplus
+}
+#endif

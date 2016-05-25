@@ -58,6 +58,7 @@ static void AEBufferStackPoolReset(AEBufferStackPool * pool);
 static void * AEBufferStackPoolGetNextFreeBuffer(AEBufferStackPool * pool);
 static BOOL AEBufferStackPoolFreeBuffer(AEBufferStackPool * pool, void * buffer);
 static void * AEBufferStackPoolGetUsedBufferAtIndex(const AEBufferStackPool * pool, int index);
+static void AEBufferStackSwapTopTwoUsedBuffers(AEBufferStackPool * pool);
 
 AEBufferStack * AEBufferStackNew(int poolSize) {
     return AEBufferStackNewWithOptions(poolSize, 2, 0);
@@ -161,6 +162,46 @@ const AudioBufferList * AEBufferStackPushWithChannels(AEBufferStack * stack, int
     return first;
 }
 
+const AudioBufferList * AEBufferStackPushExternal(AEBufferStack * stack, const AudioBufferList * buffer) {
+    
+    assert(buffer->mNumberBuffers > 0);
+    if ( stack->stackCount+1 > stack->poolSize ) {
+#ifdef DEBUG
+        if ( AERateLimit() )
+            printf("Couldn't push a buffer. Add a breakpoint on AEBufferStackPushFailed to debug.\n");
+        AEBufferStackPushFailed();
+#endif
+        return NULL;
+    }
+    
+    if ( buffer->mNumberBuffers > stack->maxChannelsPerBuffer ) {
+#ifdef DEBUG
+        if ( AERateLimit() )
+            printf("Tried to push a buffer with too many channels. Add a breakpoint on AEBufferStackPushFailed to debug.\n");
+        AEBufferStackPushFailed();
+#endif
+        return NULL;
+    }
+    
+#ifdef DEBUG
+    if ( buffer->mBuffers[0].mDataByteSize < stack->frameCount * AEAudioDescription.mBytesPerFrame ) {
+        if ( AERateLimit() )
+            printf("Warning: Pushed a buffer with %d frames < %d\n",
+                   (int)(buffer->mBuffers[0].mDataByteSize / AEAudioDescription.mBytesPerFrame),
+                   (int)stack->frameCount);
+    }
+#endif
+    
+    AudioBufferList * newBuffer
+        = (AudioBufferList *)AEBufferStackPoolGetNextFreeBuffer(&stack->bufferListPool);
+    assert(newBuffer);
+    memcpy(newBuffer, buffer, AEAudioBufferListGetStructSize(buffer));
+    
+    stack->stackCount++;
+    
+    return newBuffer;
+}
+
 const AudioBufferList * AEBufferStackDuplicate(AEBufferStack * stack) {
     const AudioBufferList * top = AEBufferStackGet(stack, 0);
     if ( !top ) return NULL;
@@ -176,10 +217,7 @@ const AudioBufferList * AEBufferStackDuplicate(AEBufferStack * stack) {
 }
 
 void AEBufferStackSwap(AEBufferStack * stack) {
-    const AudioBufferList * next = AEBufferStackGet(stack, 1);
-    if ( !next ) return;
-    AEBufferStackRemove(stack, 1);
-    AEBufferStackPushWithChannels(stack, 1, next->mNumberBuffers);
+    AEBufferStackSwapTopTwoUsedBuffers(&stack->bufferListPool);
 }
 
 void AEBufferStackPop(AEBufferStack * stack, int count) {
@@ -236,15 +274,15 @@ const AudioBufferList * AEBufferStackMixWithGain(AEBufferStack * stack, int coun
             AEDSPApplyGain(abl1, abl1Gain, stack->frameCount);
         }
         
-        AEDSPMix(abl1, abl2, 1, abl2Gain, YES, abl2);
+        AEDSPMix(abl1, abl2, 1, abl2Gain, YES, stack->frameCount, abl2);
     }
     
     return AEBufferStackGet(stack, 0);
 }
 
-void AEBufferStackApplyVolumeAndBalance(AEBufferStack * stack,
-                                        float targetVolume, float * currentVolume,
-                                        float targetBalance, float * currentBalance) {
+void AEBufferStackApplyFaders(AEBufferStack * stack,
+                              float targetVolume, float * currentVolume,
+                              float targetBalance, float * currentBalance) {
     const AudioBufferList * abl = AEBufferStackGet(stack, 0);
     if ( !abl ) return;
     
@@ -274,7 +312,7 @@ void AEBufferStackMixToBufferList(AEBufferStack * stack, int bufferCount, const 
     for ( int i=0; bufferCount ? i<bufferCount : 1; i++ ) {
         const AudioBufferList * abl = AEBufferStackGet(stack, i);
         if ( !abl ) return;
-        AEDSPMix(abl, output, 1, 1, YES, output);
+        AEDSPMix(abl, output, 1, 1, YES, stack->frameCount, output);
     }
 }
 
@@ -287,7 +325,7 @@ void AEBufferStackMixToBufferListChannels(AEBufferStack * stack, int bufferCount
     for ( int i=0; bufferCount ? i<bufferCount : 1; i++ ) {
         const AudioBufferList * abl = AEBufferStackGet(stack, i);
         if ( !abl ) return;
-        AEDSPMix(abl, outputBuffer, 1, 1, YES, outputBuffer);
+        AEDSPMix(abl, outputBuffer, 1, 1, YES, stack->frameCount, outputBuffer);
     }
 }
 
@@ -378,9 +416,6 @@ static BOOL AEBufferStackPoolFreeBuffer(AEBufferStackPool * pool, void * buffer)
     }
     
     if ( !entry ) {
-#ifdef DEBUG
-        if ( AERateLimit() ) printf("Tried to free a buffer that wasn't found in the used list\n");
-#endif
         return NO;
     }
     
@@ -397,4 +432,15 @@ static void * AEBufferStackPoolGetUsedBufferAtIndex(const AEBufferStackPool * po
         entry = entry->next;
     }
     return entry ? entry->buffer : NULL;
+}
+
+static void AEBufferStackSwapTopTwoUsedBuffers(AEBufferStackPool * pool) {
+    AEBufferStackPoolEntry * entry = pool->used;
+    if ( !entry ) return;
+    AEBufferStackPoolEntry * next = entry->next;
+    if ( !next ) return;
+    
+    entry->next = next->next;
+    next->next = entry;
+    pool->used = next;
 }

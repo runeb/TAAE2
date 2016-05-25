@@ -27,6 +27,7 @@
 #import "AEManagedValue.h"
 #import <libkern/OSAtomic.h>
 #import <pthread.h>
+#import "AEUtilities.h"
 
 typedef struct __linkedlistitem_t {
     void * data;
@@ -100,7 +101,7 @@ static BOOL __atomicUpdateWaitingForCommit = NO;
  *    thread, and (2) that we then need a mechanism to release items in the list, which we can't
  *    do on the realtime thread.
  */
-+ (void)performAtomicBatchUpdate:(void(^)())block {
++ (void)performAtomicBatchUpdate:(AEManagedValueUpdateBlock)block {
     
     if ( !__atomicUpdateWaitingForCommit ) {
         // Perform deferred sync to _atomicBatchUpdateLastValue for previously-batch-updated values
@@ -214,6 +215,12 @@ void AEManagedValueCommitPendingAtomicUpdates() {
 
 void * AEManagedValueGetValue(__unsafe_unretained AEManagedValue * THIS) {
     if ( !THIS ) return NULL;
+    
+#ifdef DEBUG
+    if ( pthread_main_np() ) {
+        if ( AERateLimit() ) NSLog(@"Warning: %s called from main thread!", __FUNCTION__);
+    }
+#endif
     
     if ( __atomicUpdateWaitingForCommit || pthread_mutex_trylock(&__atomicUpdateMutex) != 0 ) {
         // Atomic update in progress - return previous value

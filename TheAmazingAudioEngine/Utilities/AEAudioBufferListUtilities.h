@@ -24,13 +24,13 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-@import AudioToolbox;
-#import "AETypes.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import "AETypes.h"
 
 /*!
  * Allocate an audio buffer list and the associated mData pointers, using the default audio format.
@@ -252,11 +252,39 @@ void AEAudioBufferListOffsetWithFormat(AudioBufferList *bufferList,
                                        UInt32 frames);
 
 /*!
+ * Assign values of one buffer list to another, with the default audio format
+ *
+ *  Note that this simply assigns the buffer list values; if you wish to copy
+ *  the contents, use AEAudioBufferListCopy or AEAudioBufferListCopyContents
+ *
+ * @param target Target buffer list, to assign values to
+ * @param source Source buffer list, to assign values from
+ * @param offset Offset into target buffer
+ * @param length Length to assign, in frames
+ */
+void AEAudioBufferListAssign(AudioBufferList * target, const AudioBufferList * source, UInt32 offset, UInt32 length);
+    
+/*!
+ * Assign values of one buffer list to another, with the default audio format
+ *
+ *  Note that this simply assigns the buffer list values; if you wish to copy
+ *  the contents, use AEAudioBufferListCopy or AEAudioBufferListCopyContents
+ *
+ * @param target Target buffer list, to assign values to
+ * @param source Source buffer list, to assign values from
+ * @param audioFormat Audio format describing the audio in the buffer list
+ * @param offset Offset into target buffer
+ * @param length Length to assign, in frames
+ */
+void AEAudioBufferListAssignWithFormat(AudioBufferList * target, const AudioBufferList * source,
+                                       AudioStreamBasicDescription audioFormat, UInt32 offset, UInt32 length);
+
+/*!
  * Silence an audio buffer list (zero out frames), with the default audio format
  *
  * @param bufferList Pointer to an AudioBufferList containing audio
  * @param offset Offset into buffer
- * @param length Number of frames to silence (0 for whole buffer)
+ * @param length Number of frames to silence
  */
 void AEAudioBufferListSilence(const AudioBufferList *bufferList, UInt32 offset, UInt32 length);
 
@@ -266,12 +294,44 @@ void AEAudioBufferListSilence(const AudioBufferList *bufferList, UInt32 offset, 
  * @param bufferList Pointer to an AudioBufferList containing audio
  * @param audioFormat Audio format describing the audio in the buffer list
  * @param offset Offset into buffer
- * @param length Number of frames to silence (0 for whole buffer)
+ * @param length Number of frames to silence
  */
 void AEAudioBufferListSilenceWithFormat(const AudioBufferList *bufferList,
                                         AudioStreamBasicDescription audioFormat,
                                         UInt32 offset,
                                         UInt32 length);
+
+/*!
+ * Copy the contents of one AudioBufferList to another, with the default audio format
+ *
+ * @param target Target buffer list, to copy to
+ * @param source Source buffer list, to copy from
+ * @param targetOffset Offset into target buffer
+ * @param sourceOffset Offset into source buffer
+ * @param length Number of frames to copy
+ */
+void AEAudioBufferListCopyContents(const AudioBufferList * target,
+                                   const AudioBufferList * source,
+                                   UInt32 targetOffset,
+                                   UInt32 sourceOffset,
+                                   UInt32 length);
+
+/*!
+ * Copy the contents of one AudioBufferList to another, with a custom audio format
+ *
+ * @param target Target buffer list, to copy to
+ * @param source Source buffer list, to copy from
+ * @param audioFormat Audio format describing the audio in the buffer list
+ * @param targetOffset Offset into target buffer
+ * @param sourceOffset Offset into source buffer
+ * @param length Number of frames to copy
+ */
+void AEAudioBufferListCopyContentsWithFormat(const AudioBufferList * target,
+                                             const AudioBufferList * source,
+                                             AudioStreamBasicDescription audioFormat,
+                                             UInt32 targetOffset,
+                                             UInt32 sourceOffset,
+                                             UInt32 length);
 
 /*!
  * Get the size of an AudioBufferList structure

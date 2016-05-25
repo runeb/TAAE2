@@ -31,8 +31,6 @@ typedef struct {
         [messages addObject:[NSData dataWithBytes:data length:length]];
     }];
     
-    [endpoint startPolling];
-    
     AEMainThreadEndpointSend(endpoint, NULL, 0);
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:endpoint.pollInterval]];
     
@@ -56,12 +54,10 @@ typedef struct {
     XCTAssertEqualObjects(messages, (@[[NSData dataWithBytes:&value1 length:sizeof(value1)]]));
     [messages removeAllObjects];
     
-    [endpoint endPolling];
-    
-    XCTAssertFalse(AEMainThreadEndpointSend(endpoint, NULL, 0));
-    
     __weak AEMainThreadEndpoint * weakEndpoint = endpoint;
     endpoint = nil;
+    
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertNil(weakEndpoint);
 }
@@ -115,7 +111,6 @@ typedef struct {
 
 - (void)testMessageQueueAudioThreadMessaging {
     AEMessageQueue * queue = [AEMessageQueue new];
-    [queue startPolling];
     
     __block BOOL hitBlock = NO;
     __block BOOL hitCompletionBlock = NO;
@@ -150,7 +145,6 @@ typedef struct {
 
 - (void)testMessageQueueMainThreadMessaging {
     AEMessageQueue * queue = [AEMessageQueue new];
-    [queue startPolling];
     
     [self sendMainThreadMessage:queue];
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:queue.pollInterval]];

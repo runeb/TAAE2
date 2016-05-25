@@ -24,13 +24,13 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-@import AudioToolbox;
-#import "AETypes.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import "AETypes.h"
 
 /*!
  * Create an AudioComponentDescription structure
@@ -84,7 +84,7 @@ static inline BOOL _AECheckOSStatus(OSStatus result, const char * _Nonnull opera
  *  Use this function only on the main thread.
  *
  * @param url URL to the file to write to
- * @param type The type of the file to write
+ * @param fileType The type of the file to write
  * @param sampleRate Sample rate to use for input & output
  * @param channelCount Number of channels for input & output
  * @param error If not NULL, the error on output

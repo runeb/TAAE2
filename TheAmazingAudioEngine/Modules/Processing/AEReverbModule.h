@@ -24,7 +24,11 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
+#ifdef __cplusplus
+extern "C" {
+#endif
+    
+#import <Foundation/Foundation.h>
 #import "AEAudioUnitModule.h"
 
 @interface AEReverbModule : AEAudioUnitModule
@@ -53,3 +57,7 @@
 @property (nonatomic) double randomizeReflections;
 
 @end
+
+#ifdef __cplusplus
+}
+#endif

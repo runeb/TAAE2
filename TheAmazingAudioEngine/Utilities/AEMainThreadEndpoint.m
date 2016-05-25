@@ -39,7 +39,6 @@
 @end
 
 @implementation AEMainThreadEndpoint
-@dynamic isPolling;
 
 - (instancetype)initWithHandler:(AEMainThreadEndpointHandler)handler {
     return [self initWithHandler:handler bufferCapacity:8192];
@@ -55,51 +54,25 @@
         return nil;
     }
     
+    [self startTimer];
+    
     return self;
 }
 
 - (void)dealloc {
-    if ( self.timer ) {
-        [self.timer invalidate];
-    }
-    TPCircularBufferCleanup(&_buffer);
-}
-
-- (BOOL)startPolling {
-    if ( self.timer ) {
-        return YES;
-    }
-    
-    [self startTimer];
-    
-    return YES;
-}
-
-- (void)endPolling {
     [self.timer invalidate];
-    self.timer = nil;
-}
-
-- (BOOL)isPolling {
-    return self.timer != nil;
+    TPCircularBufferCleanup(&_buffer);
 }
 
 - (void)setPollInterval:(AESeconds)pollInterval {
     _pollInterval = pollInterval;
     
-    if ( self.timer ) {
-        // Restart timer
-        [self.timer invalidate];
-        [self startTimer];
-    }
+    // Restart timer
+    [self.timer invalidate];
+    [self startTimer];
 }
 
 BOOL AEMainThreadEndpointSend(__unsafe_unretained AEMainThreadEndpoint * THIS, const void * data, size_t length) {
-    
-    if ( !THIS->_timer ) {
-        // Not polling
-        return NO;
-    }
     
     // Prepare message
     void * message = AEMainThreadEndpointCreateMessage(THIS, length);

@@ -24,8 +24,12 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #import "AEModule.h"
-@import AudioToolbox;
+#import <AudioToolbox/AudioToolbox.h>
 
 /*!
  * Audio unit module
@@ -133,3 +137,7 @@ AudioUnit _Nonnull AEAudioUnitModuleGetAudioUnit(__unsafe_unretained AEAudioUnit
 @property (nonatomic, strong) AERenderer * _Nullable subrenderer;
 
 @end
+
+#ifdef __cplusplus
+}
+#endif

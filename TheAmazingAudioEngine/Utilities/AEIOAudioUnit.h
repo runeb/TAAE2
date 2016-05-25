@@ -24,8 +24,12 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-@import Foundation;
-@import AudioToolbox;
+#ifdef __cplusplus
+extern "C" {
+#endif
+    
+#import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import "AETime.h"
 
 /*!
@@ -105,7 +109,7 @@ AudioUnit _Nullable AEIOAudioUnitGetAudioUnit(__unsafe_unretained AEIOAudioUnit 
  *  from the input.
  *
  * @param unit The unit instance
- * @param audio The audio buffer list
+ * @param buffer The audio buffer list
  * @param frames Number of frames
  */
 OSStatus AEIOAudioUnitRenderInput(__unsafe_unretained AEIOAudioUnit * _Nonnull unit,
@@ -197,3 +201,7 @@ AESeconds AEIOAudioUnitGetOutputLatency(__unsafe_unretained AEIOAudioUnit * _Non
 
 #endif
 @end
+
+#ifdef __cplusplus
+}
+#endif

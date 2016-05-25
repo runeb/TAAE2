@@ -1,5 +1,5 @@
 //
-//  AEFileRecorderModule.h
+//  AEAudioFileRecorderModule.h
 //  TheAmazingAudioEngine
 //
 //  Created by Michael Tyson on 1/04/2016.
@@ -32,13 +32,16 @@ extern "C" {
 #import "AETime.h"
 #import "AETypes.h"
 
+//! Completion block
+typedef void (^AEAudioFileRecorderModuleCompletionBlock)();
+
 /*!
  * Audio file recorder
  *
  *  This module records the top buffer stack item to a file on disk.
  *  After processing, it leaves the buffer stack intact.
  */
-@interface AEFileRecorderModule : AEModule
+@interface AEAudioFileRecorderModule : AEModule
 
 /*!
  * Default initialiser
@@ -56,17 +59,17 @@ extern "C" {
 /*!
  * Begin recording
  *
- * @param timestamp Time to begin recording, or 0 for "now"
+ * @param time Time to begin recording, or 0 for "now"
  */
 - (void)beginRecordingAtTime:(AEHostTicks)time;
 
 /*!
  * Stop recording
  *
- * @param timestamp Time to end recording, or 0 for "now"
+ * @param time Time to end recording, or 0 for "now"
  * @param block Block to perform once recording has completed
  */
-- (void)stopRecordingAtTime:(AEHostTicks)time completionBlock:(void(^ _Nullable)())block;
+- (void)stopRecordingAtTime:(AEHostTicks)time completionBlock:(AEAudioFileRecorderModuleCompletionBlock _Nullable)block;
 
 @property (nonatomic, readonly) BOOL recording; //!< Whether recording is in progress
 @property (nonatomic, readonly) AESeconds recordedTime; //!< Current recording length, in seconds

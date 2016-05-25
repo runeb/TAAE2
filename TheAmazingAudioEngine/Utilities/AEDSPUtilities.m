@@ -7,8 +7,9 @@
 //
 
 #import "AEDSPUtilities.h"
-@import Accelerate;
+#import <Accelerate/Accelerate.h>
 
+static const UInt32 kMaxFramesPerSlice = 4096;
 static const UInt32 kGainSmoothingRampDuration = 128;
 static const float kGainSmoothingRampStep = 1.0 / kGainSmoothingRampDuration;
 static const float kSmoothGainThreshold = kGainSmoothingRampStep;
@@ -36,6 +37,24 @@ void AEDSPApplyRamp(const AudioBufferList * bufferList, float * start, float ste
             vDSP_vrampmul(bufferList->mBuffers[i].mData, 1, &s, &step, bufferList->mBuffers[i].mData, 1, frames);
         }
         *start = s;
+    }
+}
+
+void AEDSPApplyEqualPowerRamp(const AudioBufferList * bufferList, float * start, float step, UInt32 frames, float * scratch) {
+    static float __staticBuffer[kMaxFramesPerSlice];
+    if ( !scratch ) scratch = __staticBuffer;
+    
+    // Create envelope
+    float startRadians = *start * M_PI_2;
+    float stepRadians = step * M_PI_2;
+    vDSP_vramp(&startRadians, &stepRadians, scratch, 1, frames);
+    int frameCount = frames;
+    vvsinf(scratch, scratch, &frameCount);
+    *start += frames * step;
+    
+    // Apply envelope to each buffer
+    for ( int i=0; i<bufferList->mNumberBuffers; i++ ) {
+        vDSP_vmul(bufferList->mBuffers[i].mData, 1, scratch, 1, bufferList->mBuffers[i].mData, 1, frames);
     }
 }
 
@@ -122,9 +141,9 @@ void AEDSPApplyVolumeAndBalance(const AudioBufferList * bufferList, float target
 }
 
 void AEDSPMix(const AudioBufferList * abl1, const AudioBufferList * abl2, float gain1, float gain2,
-              BOOL monoToStereo, const AudioBufferList * output) {
+              BOOL monoToStereo, UInt32 frames, const AudioBufferList * output) {
     
-    int frames = output->mBuffers[0].mDataByteSize / sizeof(float);
+    if ( !frames ) frames = output->mBuffers[0].mDataByteSize / sizeof(float);
     
     if ( gain2 != 1.0f && gain1 == 1.0f ) {
         // Swap around, for efficiency
@@ -204,5 +223,30 @@ void AEDSPMix(const AudioBufferList * abl1, const AudioBufferList * abl2, float 
                           (float*)output->mBuffers[0].mData, 1, frames);
             }
         }
+    }
+}
+
+void AEDSPMixMono(const float * buffer1, const float * buffer2, float gain1, float gain2, UInt32 frames, float * output) {
+    if ( gain2 != 1.0f && gain1 == 1.0f ) {
+        // Swap buffers around, for efficiency
+        const float * tmpb = buffer2;
+        buffer2 = buffer1;
+        buffer1 = tmpb;
+        const float tmpg = gain2;
+        gain2 = gain1;
+        gain1 = tmpg;
+    }
+    
+    if ( gain2 != 1.0f) {
+        // Pre-apply gain to second buffer
+        vDSP_vsmul(buffer2, 1, &gain2, output, 1, frames);
+        buffer2 = output;
+    }
+    
+    // Mix
+    if ( gain1 != 1.0f ) {
+        vDSP_vsma(buffer1, 1, &gain1, buffer2, 1, output, 1, frames);
+    } else {
+        vDSP_vadd(buffer1, 1, buffer2, 1, output, 1, frames);
     }
 }
