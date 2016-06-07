@@ -34,6 +34,7 @@ NSString * const AERendererDidChangeNumberOfOutputChannelsNotification = @"AERen
 
 @interface AERenderer () {
   AudioTimeStamp startTimestamp;
+    UInt32 _sampleTime;
 }
 @property (nonatomic, strong) AEManagedValue * blockValue;
 @property (nonatomic, readwrite) AEBufferStack * stack;
