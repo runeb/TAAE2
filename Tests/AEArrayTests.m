@@ -8,7 +8,7 @@
 
 #import <XCTest/XCTest.h>
 #import "AEArray.h"
-
+#import "AEManagedValue.h"
 
 @interface AEArrayTests : XCTestCase
 
@@ -33,11 +33,22 @@
     XCTAssertEqualObjects((__bridge id)AEArrayGetItem(token, 1), @(2));
     XCTAssertEqualObjects((__bridge id)AEArrayGetItem(token, 2), @(3));
     
+    int i=1;
+    AEArrayEnumerateObjects(array, NSNumber *, number) {
+        XCTAssertEqualObjects(number, @(i++));
+    }
+    
+    i=1;
+    AEArrayEnumeratePointers(array, void *, number) {
+        XCTAssertEqualObjects((__bridge NSNumber*)number, @(i++));
+    }
+    
     @autoreleasepool {
         [array updateWithContentsOfArray:@[@(4), @(5)]];
     }
     
     AEArrayGetToken(array);
+    AEManagedValueCommitPendingUpdates();
     
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
     
@@ -88,6 +99,7 @@ struct testStruct {
     [array updateWithContentsOfArray:@[@(4), @(1)]];
     
     token = AEArrayGetToken(array);
+    AEManagedValueCommitPendingUpdates();
     
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
     
@@ -113,6 +125,7 @@ struct testStruct {
     XCTAssertEqualObjects(added, (@[@[@(3), @(1)]]));
     
     token = AEArrayGetToken(array);
+    AEManagedValueCommitPendingUpdates();
     
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
     

@@ -1,8 +1,8 @@
 //
-//  AETime.h
+//  AEWeakRetainingProxy.m
 //  TheAmazingAudioEngine
 //
-//  Created by Michael Tyson on 24/03/2016.
+//  Created by Michael Tyson on 8/06/2016.
 //  Copyright © 2016 A Tasty Pixel. All rights reserved.
 //
 //  This software is provided 'as-is', without any express or implied
@@ -24,41 +24,28 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#import "AEWeakRetainingProxy.h"
 
-#import <Foundation/Foundation.h>
+@interface AEWeakRetainingProxy ()
+@property (nonatomic, weak, readwrite) id target;
+@end
 
-typedef uint64_t AEHostTicks;
-typedef double AESeconds;
+@implementation AEWeakRetainingProxy
 
-/*!
- * Get current global timestamp, in host ticks
- */
-AEHostTicks AECurrentTimeInHostTicks(void);
-
-/*!
- * Get current global timestamp, in seconds
- */
-AESeconds AECurrentTimeInSeconds(void);
-
-/*!
- * Convert time in seconds to host ticks
- *
- * @param seconds The time in seconds
- * @return The time in host ticks
- */
-AEHostTicks AEHostTicksFromSeconds(AESeconds seconds);
-
-/*!
- * Convert time in host ticks to seconds
- *
- * @param ticks The time in host ticks
- * @return The time in seconds
- */
-AESeconds AESecondsFromHostTicks(AEHostTicks ticks);
-
-#ifdef __cplusplus
++ (instancetype)proxyWithTarget:(id)target {
+    AEWeakRetainingProxy * proxy = [AEWeakRetainingProxy alloc];
+    proxy.target = target;
+    return proxy;
 }
-#endif
+
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    return [_target methodSignatureForSelector:selector];
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    __strong id target = _target;
+    [invocation setTarget:target];
+    [invocation invoke];
+}
+
+@end

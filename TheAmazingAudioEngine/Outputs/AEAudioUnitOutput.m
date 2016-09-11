@@ -81,6 +81,8 @@ static const AESeconds kRenderBudgetWarningInitialDelay = 4.0; // Seconds to wai
     
     __unsafe_unretained AEAudioUnitOutput * weakSelf = self;
     self.ioUnit.renderBlock = ^(AudioBufferList * _Nonnull ioData, UInt32 frames, const AudioTimeStamp * _Nonnull timestamp) {
+        AEManagedValueCommitPendingUpdates();
+        
         __unsafe_unretained AERenderer * renderer = (__bridge AERenderer*)AEManagedValueGetValue(rendererValue);
         if ( renderer ) {
             #ifdef DEBUG
@@ -110,12 +112,12 @@ static const AESeconds kRenderBudgetWarningInitialDelay = 4.0; // Seconds to wai
         
         if ( rateChanged ) {
            [[NSNotificationCenter defaultCenter]
-            postNotificationName:AEAudioUnitOutputDidChangeSampleRateNotification object:self];
+            postNotificationName:AEAudioUnitOutputDidChangeSampleRateNotification object:weakSelf];
         }
         
         if ( channelsChanged ) {
            [[NSNotificationCenter defaultCenter]
-            postNotificationName:AEAudioUnitOutputDidChangeNumberOfOutputChannelsNotification object:self];
+            postNotificationName:AEAudioUnitOutputDidChangeNumberOfOutputChannelsNotification object:weakSelf];
         }
     }];
     
@@ -163,6 +165,13 @@ static const AESeconds kRenderBudgetWarningInitialDelay = 4.0; // Seconds to wai
 }
 
 - (AudioUnit)audioUnit {
+    if ( !self.ioUnit.audioUnit ) {
+        NSError * error = nil;
+        if ( ![self.ioUnit setup:&error] ) {
+            NSLog(@"Unable to set up IO unit: %@", error);
+            return NULL;
+        }
+    }
     return self.ioUnit.audioUnit;
 }
 

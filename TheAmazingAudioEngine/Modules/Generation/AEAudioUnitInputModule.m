@@ -33,14 +33,14 @@
 #import <AVFoundation/AVFoundation.h>
 
 @interface AEAudioUnitInputModule ()
-@property (nonatomic, strong) AEIOAudioUnit * ioUnit;
+@property (nonatomic, weak) AEIOAudioUnit * ioUnit;
 @property (nonatomic, readwrite) int numberOfInputChannels;
 @property (nonatomic, strong) id ioUnitStreamChangeObserverToken;
 @property (nonatomic) BOOL ownsIOUnit;
 @end
 
 @implementation AEAudioUnitInputModule
-@dynamic audioUnit, running;
+@dynamic audioUnit, running, inputGain;
 #if TARGET_OS_IPHONE
 @dynamic latencyCompensation;
 #endif
@@ -55,7 +55,8 @@
     if ( audioUnit ) {
         self.ioUnit = audioUnit;
     } else {
-        self.ioUnit = [AEIOAudioUnit new];
+        // We need to add a bridging retain, because the property is weak
+        self.ioUnit = (__bridge AEIOAudioUnit*) CFBridgingRetain([AEIOAudioUnit new]);
         self.ioUnit.inputEnabled = YES;
         self.ioUnit.sampleRate = self.renderer.sampleRate;
         self.ownsIOUnit = YES;
@@ -63,7 +64,7 @@
     
     self.ioUnit.maximumInputChannels = AEBufferStackGetMaximumChannelsPerBuffer(self.renderer.stack);
     
-    __weak AEAudioUnitInputModule * weakSelf = self;
+    __weak typeof(self) weakSelf = self;
     self.ioUnitStreamChangeObserverToken =
     [[NSNotificationCenter defaultCenter] addObserverForName:AEIOAudioUnitDidUpdateStreamFormatNotification object:self.ioUnit
                                                        queue:NULL usingBlock:^(NSNotification * _Nonnull note) {
@@ -81,6 +82,10 @@
 }
 
 - (void)dealloc {
+    if ( self.ownsIOUnit ) {
+        // Add a bridging release, because we manually retained the audio unit
+        CFBridgingRelease((__bridge CFTypeRef)self.ioUnit);
+    }
     [[NSNotificationCenter defaultCenter] removeObserver:self.ioUnitStreamChangeObserverToken];
 }
 
@@ -116,6 +121,25 @@
     }
 }
 
+- (AudioUnit)audioUnit {
+    if ( !self.ioUnit.audioUnit ) {
+        NSError * error = nil;
+        if ( ![self.ioUnit setup:&error] ) {
+            NSLog(@"Unable to set up IO unit: %@", error);
+            return NULL;
+        }
+    }
+    return self.ioUnit.audioUnit;
+}
+
+- (void)setInputGain:(double)inputGain {
+    self.ioUnit.inputGain = inputGain;
+}
+
+- (double)inputGain {
+    return self.ioUnit.inputGain;
+}
+
 #if TARGET_OS_IPHONE
 - (BOOL)latencyCompensation {
     return self.ioUnit.latencyCompensation;
@@ -144,6 +168,8 @@ static void AEAudioUnitInputModuleProcess(__unsafe_unretained AEAudioUnitInputMo
     
     const AudioBufferList * abl = AEBufferStackPushWithChannels(context->stack, 1, self->_numberOfInputChannels);
     if ( !abl) return;
+    
+    *AEBufferStackGetTimeStampForBuffer(context->stack, 0) = AEIOAudioUnitGetInputTimestamp(self->_ioUnit);
     
     OSStatus status = AEIOAudioUnitRenderInput(self->_ioUnit, abl, context->frames);
     if ( status != noErr ) {

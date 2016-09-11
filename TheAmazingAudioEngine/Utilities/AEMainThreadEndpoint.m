@@ -26,19 +26,45 @@
 
 #import "AEMainThreadEndpoint.h"
 #import "TPCircularBuffer.h"
+#import <mach/semaphore.h>
+#import <mach/task.h>
+#import <mach/mach_init.h>
+#import <pthread.h>
+
+static const int kMaxMessagesEachService = 20;
+static const int kMaxMessageLengthForCopy = 256;
+
+@class AEMainThreadEndpointThread;
+
+static AEMainThreadEndpointThread * __sharedThread = nil;
 
 @interface AEMainThreadEndpoint () {
     TPCircularBuffer _buffer;
+    BOOL _hasPendingMainThreadMessages;
 }
 @property (nonatomic, copy) AEMainThreadEndpointHandler handler;
-@property (nonatomic, strong) NSTimer * timer;
+@property (nonatomic) semaphore_t semaphore;
+@property (nonatomic, strong) AEMainThreadEndpointThread * thread;
 @end
 
-@interface AEMainThreadEndpointProxy : NSProxy
-@property (nonatomic, weak) AEMainThreadEndpoint * target;
+@interface AEMainThreadEndpointThread : NSThread
+- (void)addEndpoint:(AEMainThreadEndpoint *)endpoint;
+- (void)removeEndpoint:(AEMainThreadEndpoint *)endpoint;
+@property (nonatomic) semaphore_t semaphore;
 @end
 
 @implementation AEMainThreadEndpoint
+
++ (AEMainThreadEndpointThread *)sharedThread {
+    assert(pthread_main_np());
+    
+    if ( !__sharedThread ) {
+        __sharedThread = [AEMainThreadEndpointThread new];
+        [__sharedThread start];
+    }
+    
+    return __sharedThread;
+}
 
 - (instancetype)initWithHandler:(AEMainThreadEndpointHandler)handler {
     return [self initWithHandler:handler bufferCapacity:8192];
@@ -47,29 +73,22 @@
 - (instancetype)initWithHandler:(AEMainThreadEndpointHandler)handler bufferCapacity:(size_t)bufferCapacity {
     if ( !(self = [super init]) ) return nil;
     
-    _pollInterval = 0.01;
     self.handler = handler;
     
     if ( !TPCircularBufferInit(&_buffer, (int32_t)bufferCapacity) ) {
         return nil;
     }
     
-    [self startTimer];
+    self.thread = [AEMainThreadEndpoint sharedThread];
+    [self.thread addEndpoint:self];
+    self.semaphore = self.thread.semaphore;
     
     return self;
 }
 
 - (void)dealloc {
-    [self.timer invalidate];
+    [self.thread removeEndpoint:self];
     TPCircularBufferCleanup(&_buffer);
-}
-
-- (void)setPollInterval:(AESeconds)pollInterval {
-    _pollInterval = pollInterval;
-    
-    // Restart timer
-    [self.timer invalidate];
-    [self startTimer];
 }
 
 BOOL AEMainThreadEndpointSend(__unsafe_unretained AEMainThreadEndpoint * THIS, const void * data, size_t length) {
@@ -117,17 +136,11 @@ void AEMainThreadEndpointDispatchMessage(__unsafe_unretained AEMainThreadEndpoin
     
     // Mark as ready to read
     TPCircularBufferProduce(&THIS->_buffer, (int32_t)size);
+    semaphore_signal(THIS->_semaphore);
 }
 
-- (void)startTimer {
-    AEMainThreadEndpointProxy * proxy = [AEMainThreadEndpointProxy alloc];
-    proxy.target = self;
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:self.pollInterval target:proxy selector:@selector(poll)
-                                                userInfo:nil repeats:YES];
-}
-
-- (void)poll {
-    while ( 1 ) {
+- (void)serviceMessages {
+    for ( int i=0; i<kMaxMessagesEachService; i++ ) {
         // Get pointer to readable bytes
         int32_t availableBytes;
         void * tail = TPCircularBufferTail(&_buffer, &availableBytes);
@@ -137,8 +150,21 @@ void AEMainThreadEndpointDispatchMessage(__unsafe_unretained AEMainThreadEndpoin
         size_t length = *((size_t*)tail);
         void * data = length > 0 ? (tail + sizeof(size_t)) : NULL;
         
-        // Run handler
-        self.handler(data, length);
+        if ( length < kMaxMessageLengthForCopy ) {
+            // Copy data so we can run asynchronously
+            void * dataCopy = malloc(length);
+            memcpy(dataCopy, data, length);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Run handler
+                self.handler(dataCopy, length);
+                free(dataCopy);
+            });
+        } else {
+            // Run handler synchronously
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                self.handler(data, length);
+            });
+        }
         
         // Mark as read
         TPCircularBufferConsume(&_buffer, (int32_t)(sizeof(size_t) + length));
@@ -147,12 +173,120 @@ void AEMainThreadEndpointDispatchMessage(__unsafe_unretained AEMainThreadEndpoin
 
 @end
 
-@implementation AEMainThreadEndpointProxy
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
-    return [_target methodSignatureForSelector:selector];
+#pragma mark - Handler thread
+
+@interface AEMainThreadEndpointThread () {
+    pthread_mutex_t _mutex;
+    pthread_mutex_t _deferredMutex;
 }
-- (void)forwardInvocation:(NSInvocation *)invocation {
-    [invocation setTarget:_target];
-    [invocation invoke];
+@property (nonatomic, strong) NSHashTable * endpoints;
+@property (nonatomic, strong) NSHashTable * deferredRemovals;
+@property (nonatomic, strong) NSHashTable * deferredAdditions;
+@end
+
+@implementation AEMainThreadEndpointThread
+
+- (instancetype)init {
+    if ( !(self = [super init]) ) return nil;
+    semaphore_create(mach_task_self(), &_semaphore, SYNC_POLICY_FIFO, 0);
+    self.endpoints =
+        [[NSHashTable alloc] initWithOptions:NSPointerFunctionsOpaqueMemory|NSPointerFunctionsObjectPointerPersonality
+                                    capacity:8];
+    pthread_mutex_init(&_mutex, 0);
+    pthread_mutex_init(&_deferredMutex, 0);
+    return self;
 }
+
+- (void)dealloc {
+    semaphore_destroy(mach_task_self(), _semaphore);
+    pthread_mutex_destroy(&_mutex);
+    pthread_mutex_destroy(&_deferredMutex);
+}
+
+- (void)cancel {
+    [super cancel];
+    semaphore_signal(_semaphore);
+}
+
+- (void)addEndpoint:(AEMainThreadEndpoint *)endpoint {
+    if ( pthread_mutex_trylock(&_mutex) == 0 ) {
+        [self.endpoints addObject:endpoint];
+        pthread_mutex_unlock(&_mutex);
+        semaphore_signal(_semaphore);
+    } else {
+        // Defer addition to avoid contention over endpoints list
+        pthread_mutex_lock(&_deferredMutex);
+        if ( !self.deferredAdditions ) {
+            self.deferredAdditions =
+                [[NSHashTable alloc] initWithOptions:NSPointerFunctionsOpaqueMemory|NSPointerFunctionsObjectPointerPersonality
+                                            capacity:8];
+        }
+        [self.deferredAdditions addObject:endpoint];
+        semaphore_signal(_semaphore);
+        pthread_mutex_unlock(&_deferredMutex);
+    }
+}
+
+- (void)removeEndpoint:(AEMainThreadEndpoint *)endpoint {
+    if ( pthread_mutex_trylock(&_mutex) == 0 ) {
+        [self.endpoints removeObject:endpoint];
+        if ( self.endpoints.count == 0 ) {
+            __sharedThread = nil;
+            [self cancel];
+        }
+        pthread_mutex_unlock(&_mutex);
+    } else {
+        // Defer removal to avoid contention over endpoints list
+        pthread_mutex_lock(&_deferredMutex);
+        if ( !self.deferredRemovals ) {
+            self.deferredRemovals =
+                [[NSHashTable alloc] initWithOptions:NSPointerFunctionsOpaqueMemory|NSPointerFunctionsObjectPointerPersonality
+                                            capacity:8];
+        }
+        [self.deferredRemovals addObject:endpoint];
+        semaphore_signal(_semaphore);
+        pthread_mutex_unlock(&_deferredMutex);
+    }
+}
+
+- (void)main {
+    pthread_setname_np("AEMainThreadEndpoint");
+    
+    while ( 1 ) {
+        pthread_mutex_lock(&_mutex);
+        if ( self.cancelled ) {
+            pthread_mutex_unlock(&_mutex);
+            break;
+        }
+        @autoreleasepool {
+            // Keep strong reference to endpoint to avoid deallocation during servicing
+            for ( __strong AEMainThreadEndpoint * endpoint in self.endpoints ) {
+                [endpoint serviceMessages];
+            }
+        }
+        
+        if ( self.deferredRemovals || self.deferredAdditions ) {
+            // Apply deferred additions/removals (deferred to avoid contention over the endpoints list)
+            pthread_mutex_lock(&_deferredMutex);
+            for ( __unsafe_unretained AEMainThreadEndpoint * endpoint in self.deferredAdditions ) {
+                [self.endpoints addObject:endpoint];
+            }
+            for ( __unsafe_unretained AEMainThreadEndpoint * endpoint in self.deferredRemovals ) {
+                [self.endpoints removeObject:endpoint];
+            }
+            self.deferredAdditions = self.deferredRemovals = nil;
+            pthread_mutex_unlock(&_deferredMutex);
+        }
+        
+        pthread_mutex_unlock(&_mutex);
+        
+        if ( self.cancelled ) {
+            // We'll be cancelled here if the endpoint was released during servicing, so exit
+            break;
+        }
+        
+        semaphore_wait(_semaphore);
+    }
+}
+
 @end

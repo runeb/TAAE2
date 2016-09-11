@@ -67,7 +67,22 @@ typedef struct {
 }
 
 - (void)dealloc {
-    self.value = nil;
+#ifdef DEBUG
+    // Verify that value is deallocated correctly
+    __weak AEManagedValue * weakValue = nil;
+    @autoreleasepool {
+        weakValue = _value;
+        self.value = nil;
+    }
+    if ( weakValue ) {
+        NSLog(@"AEArray value leaked: %@", weakValue);
+        weakValue.releaseBlock = nil;
+    }
+#else
+    @autoreleasepool {
+        self.value = nil;
+    }
+#endif
 }
 
 - (NSArray *)allValues {
@@ -92,7 +107,7 @@ typedef struct {
 
 - (void *)pointerValueAtIndex:(int)index {
     array_t * array = (array_t*)_value.pointerValue;
-    return array->count >= index ? array->entries[index]->pointer : NULL;
+    return index < array->count ? array->entries[index]->pointer : NULL;
 }
 
 - (void *)pointerValueForObject:(id)object {
@@ -101,6 +116,29 @@ typedef struct {
     NSUInteger index = [array->objects indexOfObject:object];
     if ( index == NSNotFound ) return NULL;
     return [self pointerValueAtIndex:(int)index];
+}
+
+- (void)updatePointerValue:(void *)value forObject:(id)object {
+    array_t * array = (array_t*)_value.pointerValue;
+    if ( !array->objects ) return;
+    NSUInteger index = [array->objects indexOfObject:object];
+    if ( index == NSNotFound || index >= array->count ) return;
+    
+    size_t size = sizeof(array_t) + (sizeof(void*) * array->count-1);
+    array_t * newArray = (array_t*)malloc(size);
+    memcpy(newArray, array, size);
+    
+    newArray->entries[index] = (array_entry_t*)malloc(sizeof(array_entry_t));
+    newArray->entries[index]->pointer = value;
+    newArray->entries[index]->referenceCount = 1;
+    
+    for ( int i=0; i<newArray->count; i++ ) {
+        if ( i != index ) newArray->entries[i]->referenceCount++;
+    }
+    
+    CFBridgingRetain(newArray->objects);
+    
+    _value.pointerValue = newArray;
 }
 
 - (void)updateWithContentsOfArray:(NSArray *)array {
@@ -160,20 +198,18 @@ void * AEArrayGetItem(AEArrayToken token, int index) {
 #pragma mark - Helpers
 
 - (void)releaseOldArray:(array_t *)array {
-    if ( _mappingBlock ) {
-        for ( int i=0; i<array->count; i++ ) {
-            array->entries[i]->referenceCount--;
-            if ( array->entries[i]->referenceCount == 0 ) {
-                if ( _releaseBlock ) {
-                    _releaseBlock(array->objects[i], array->entries[i]->pointer);
-                } else if ( array->entries[i]->pointer != (__bridge void*)array->objects[i] && array->entries[i]->pointer ) {
-                    free(array->entries[i]->pointer);
-                }
-                free(array->entries[i]);
+    for ( int i=0; i<array->count; i++ ) {
+        array->entries[i]->referenceCount--;
+        if ( array->entries[i]->referenceCount == 0 ) {
+            if ( _releaseBlock ) {
+                _releaseBlock(array->objects[i], array->entries[i]->pointer);
+            } else if ( array->entries[i]->pointer && array->entries[i]->pointer != (__bridge void*)array->objects[i] ) {
+                free(array->entries[i]->pointer);
             }
+            free(array->entries[i]);
         }
     }
-    if ( array->objects ) CFRelease((CFTypeRef)array->objects);
+    if ( array->objects ) CFBridgingRelease((__bridge CFTypeRef)array->objects);
     free(array);
 }
 

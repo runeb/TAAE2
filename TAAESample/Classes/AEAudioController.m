@@ -105,9 +105,9 @@ static const double kMicBandpassCenterFrequency = 2000.0;
     self.hit = oneshot;
     [players addObject:oneshot];
     
-    // Create an aggregator module to run the players
-    AEAggregatorModule * aggregator = [[AEAggregatorModule alloc] initWithRenderer:subrenderer];
-    aggregator.modules = players;
+    // Create a mixer module to run the players
+    AEMixerModule * mixer = [[AEMixerModule alloc] initWithRenderer:subrenderer];
+    mixer.modules = players;
     
     // Setup mic input (we'll draw from the output's IO audio unit, on iOS; on the Mac, this has its own IO unit).
     AEAudioUnitInputModule * input = self.output.inputModule;
@@ -130,8 +130,8 @@ static const double kMicBandpassCenterFrequency = 2000.0;
     // rules apply: No holding locks, no memory allocation, no Objective-C/Swift code.
     AEVarispeedModule * varispeed = [[AEVarispeedModule alloc] initWithRenderer:renderer subrenderer:subrenderer];
     subrenderer.block = ^(const AERenderContext * _Nonnull context) {
-        // Run all the players, though the aggregator
-        AEModuleProcess(aggregator, context);
+        // Run all the players, though the mixer
+        AEModuleProcess(mixer, context);
         
         // Put the resulting buffer on the output
         AERenderContextOutput(context, 1);
@@ -148,6 +148,7 @@ static const double kMicBandpassCenterFrequency = 2000.0;
     
     // Setup top-level renderer. This is all performed on the audio thread, so the usual
     // rules apply: No holding locks, no memory allocation, no Objective-C/Swift code.
+    __unsafe_unretained AEAudioController * THIS = self;
     renderer.block = ^(const AERenderContext * _Nonnull context) {
         
         // See if we have an active recorder
@@ -166,8 +167,9 @@ static const double kMicBandpassCenterFrequency = 2000.0;
         
         // Sweep balance
         float bal = 0.0;
-        if ( _balanceSweepRate > 0 ) {
-            bal = AEDSPGenerateOscillator((1.0/_balanceSweepRate) / (context->sampleRate/context->frames), &balanceLfo) * 2 - 1;
+        if ( THIS->_balanceSweepRate > 0 ) {
+            bal = AEDSPGenerateOscillator((1.0/THIS->_balanceSweepRate)
+                                          / (context->sampleRate/context->frames), &balanceLfo) * 2 - 1;
         } else {
             balanceLfo = 0.5;
         }
@@ -181,7 +183,7 @@ static const double kMicBandpassCenterFrequency = 2000.0;
         // Put on output
         AERenderContextOutput(context, 1);
         
-        if ( _inputEnabled ) {
+        if ( THIS->_inputEnabled ) {
             // Add audio input
             AEModuleProcess(input, context);
             
@@ -191,7 +193,7 @@ static const double kMicBandpassCenterFrequency = 2000.0;
             AEDSPApplyGain(AEBufferStackGet(context->stack, 0), 2.0, context->frames);
             
             // If it's safe to do so, put this on the output
-            if ( !_playingThroughSpeaker ) {
+            if ( !THIS->_playingThroughSpeaker ) {
                 if ( player ) {
                     // If we're playing a recording, duck first
                     AEDSPApplyGain(AEBufferStackGet(context->stack, 0), 0.1, context->frames);
@@ -203,7 +205,7 @@ static const double kMicBandpassCenterFrequency = 2000.0;
         
         // Run through recorder, if it's there
         if ( recorder && !player ) {
-            if ( _inputEnabled ) {
+            if ( THIS->_inputEnabled ) {
                 // We have a buffer from input to mix in
                 AEBufferStackMix(context->stack, 2);
             }
@@ -235,6 +237,8 @@ static const double kMicBandpassCenterFrequency = 2000.0;
 
 - (BOOL)start:(NSError *__autoreleasing *)error registerObservers:(BOOL)registerObservers {
 
+#if TARGET_OS_IPHONE
+    
     // Request a 128 frame hardware duration, for minimal latency
     AVAudioSession * session = [AVAudioSession sharedInstance];
     [session setPreferredIOBufferDuration:128.0/session.sampleRate error:NULL];
@@ -252,6 +256,8 @@ static const double kMicBandpassCenterFrequency = 2000.0;
         [self registerObservers];
     }
     
+#endif
+    
     // Start the output and input
     return [self.output start:error] && (!self.inputEnabled || [self.input start:error]);
 }
@@ -264,12 +270,18 @@ static const double kMicBandpassCenterFrequency = 2000.0;
     // Stop, and deactivate the audio session
     [self.output stop];
     [self.input stop];
+
+#if TARGET_OS_IPHONE
+
     [[AVAudioSession sharedInstance] setActive:NO error:NULL];
     
     if ( removeObservers ) {
         // Remove our notification handlers
         [self unregisterObservers];
     }
+
+#endif
+
 }
 
 #pragma mark - Recording
@@ -326,7 +338,7 @@ static const double kMicBandpassCenterFrequency = 2000.0;
         
         // Go
         self.playingRecording = YES;
-        [player playAtTime:0];
+        [player playAtTime:AETimeStampNone];
     }
 }
 
@@ -407,6 +419,8 @@ static const double kMicBandpassCenterFrequency = 2000.0;
     
     _inputEnabled = inputEnabled;
     
+#if TARGET_OS_IPHONE
+    
     if ( _inputEnabled ) {
         // See if we have record permissions
         __weak AEAudioController * weakSelf = self;
@@ -428,6 +442,8 @@ static const double kMicBandpassCenterFrequency = 2000.0;
     if ( ![self setAudioSessionCategory:nil] ) {
         return;
     }
+    
+#endif
     
     // Start or stop the input module
     if ( _inputEnabled ) {
@@ -477,6 +493,8 @@ static const double kMicBandpassCenterFrequency = 2000.0;
 }
 
 #pragma mark - Helpers
+
+#if TARGET_OS_IPHONE
 
 - (void)updatePlayingThroughSpeaker {
     AVAudioSession * session = [AVAudioSession sharedInstance];
@@ -540,5 +558,7 @@ static const double kMicBandpassCenterFrequency = 2000.0;
         self.audioInterruptionObserverToken = nil;
     }
 }
+
+#endif
 
 @end

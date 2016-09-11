@@ -32,7 +32,7 @@ typedef struct {
     }];
     
     AEMainThreadEndpointSend(endpoint, NULL, 0);
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:endpoint.pollInterval]];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertEqualObjects(messages, (@[[NSData dataWithBytes:NULL length:0]]));
     [messages removeAllObjects];
@@ -43,13 +43,13 @@ typedef struct {
     AEMainThreadEndpointSend(endpoint, &value1, sizeof(value1));
     AEMainThreadEndpointSend(endpoint, &value2, sizeof(value2));
     AEMainThreadEndpointSend(endpoint, &value3, sizeof(value3));
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:endpoint.pollInterval]];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertEqualObjects(messages, (@[[NSData dataWithBytes:&value1 length:sizeof(value1)], [NSData dataWithBytes:&value2 length:sizeof(value2)], [NSData dataWithBytes:&value3 length:sizeof(value3)]]));
     [messages removeAllObjects];
     
     AEMainThreadEndpointSend(endpoint, &value1, sizeof(value1));
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:endpoint.pollInterval]];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertEqualObjects(messages, (@[[NSData dataWithBytes:&value1 length:sizeof(value1)]]));
     [messages removeAllObjects];
@@ -60,6 +60,24 @@ typedef struct {
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertNil(weakEndpoint);
+}
+
+- (void)testMainThreadEndpointStressTest {
+    __block int counter = 0;
+    AEMainThreadEndpoint * endpoint = [[AEMainThreadEndpoint alloc] initWithHandler:^(const void *data, size_t length) {
+        counter++;
+    }];
+    
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        for ( int i=0; i<100; i++) {
+            AEMainThreadEndpointSend(endpoint, NULL, 0);
+            usleep(100);
+        }
+    });
+    
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    
+    XCTAssertEqual(counter, 100);
 }
 
 - (void)testAudioThreadEndpointMessaging {
@@ -130,7 +148,7 @@ typedef struct {
     XCTAssertNotNil(weakObject);
     
     AEMessageQueuePoll(queue);
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:queue.pollInterval]];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertTrue(hitBlock);
     XCTAssertTrue(hitCompletionBlock);
@@ -147,7 +165,7 @@ typedef struct {
     AEMessageQueue * queue = [AEMessageQueue new];
     
     [self sendMainThreadMessage:queue];
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:queue.pollInterval]];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertEqual(self.mainThreadMessageValue1, 1);
     XCTAssertEqual(self.mainThreadMessageValue2, self);
@@ -159,9 +177,24 @@ typedef struct {
     
     AEMessageQueuePerformSelectorOnMainThread(queue, self, @selector(mainThreadMessageTestWithNoArguments), AEArgumentNone);
     
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:queue.pollInterval]];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     
     XCTAssertEqual(self.mainThreadMessageValue1, 3);
+}
+
+- (void)testReleaseWithinHandler {
+    __block AEMainThreadEndpoint * endpoint
+            = [[AEMainThreadEndpoint alloc] initWithHandler:^(const void * _Nullable data, size_t length) {
+        endpoint = nil;
+    }];
+    
+    __weak AEMainThreadEndpoint * weakEndpoint = endpoint;
+    
+    AEMainThreadEndpointSend(endpoint, NULL, 0);
+    
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    
+    XCTAssertNil(weakEndpoint);
 }
 
 - (void)sendMainThreadMessage:(AEMessageQueue*)queue {

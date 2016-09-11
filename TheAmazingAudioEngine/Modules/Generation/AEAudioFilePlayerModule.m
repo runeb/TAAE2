@@ -47,7 +47,7 @@ static const UInt32 kNoValue = -1;
     AESeconds   _regionStartTime;
     BOOL        _stopEventScheduled;
     BOOL        _sequenceScheduled;
-    AEHostTicks _startTime;
+    AudioTimeStamp _startTime;
     AEHostTicks _anchorTime;
     double      _playhead;
     UInt32      _remainingMicrofadeInFrames;
@@ -56,10 +56,6 @@ static const UInt32 kNoValue = -1;
 @property (nonatomic, strong, readwrite) NSURL * url;
 @property (nonatomic, strong) AEManagedValue * mainThreadEndpointValue;
 @property (nonatomic, copy) void(^beginBlock)();
-@end
-
-@interface AEAudioFilePlayerModuleWeakProxy : NSProxy
-@property (nonatomic, weak) id target;
 @end
 
 @implementation AEAudioFilePlayerModule
@@ -101,18 +97,18 @@ static const UInt32 kNoValue = -1;
     }
 }
 
-- (void)playAtTime:(AEHostTicks)time {
+- (void)playAtTime:(AudioTimeStamp)time {
     [self playAtTime:time beginBlock:nil];
 }
 
-- (void)playAtTime:(AEHostTicks)time beginBlock:(AEAudioFilePlayerModuleBlock)block {
+- (void)playAtTime:(AudioTimeStamp)time beginBlock:(AEAudioFilePlayerModuleBlock)block {
 #ifdef DEBUG
-    if ( time ) {
+    if ( time.mFlags & kAudioTimeStampHostTimeValid ) {
         AEHostTicks now = AECurrentTimeInHostTicks();
-        if ( time < now-AEHostTicksFromSeconds(0.5) ) {
-            NSLog(@"%@: Start time is %lf seconds in the past", self, AESecondsFromHostTicks(now-time));
-        } else if ( time > now+AEHostTicksFromSeconds(60*60) ) {
-            NSLog(@"%@: Start time is %lf seconds in the future", self, AESecondsFromHostTicks(time-now));
+        if ( time.mHostTime < now-AEHostTicksFromSeconds(0.5) ) {
+            NSLog(@"%@: Start time is %lf seconds in the past", self, AESecondsFromHostTicks(now-time.mHostTime));
+        } else if ( time.mHostTime > now+AEHostTicksFromSeconds(60*60) ) {
+            NSLog(@"%@: Start time is %lf seconds in the future", self, AESecondsFromHostTicks(time.mHostTime-now));
         }
     }
 #endif
@@ -138,7 +134,7 @@ static const UInt32 kNoValue = -1;
 
 - (void)stop {
     self.beginBlock = nil;
-    if ( _startTime ) {
+    if ( _startTime.mFlags != 0 ) {
         // Not yet playing - just stop now
         AECheckOSStatus(AudioUnitReset(self.audioUnit, kAudioUnitScope_Global, 0), "AudioUnitReset");
         _sequenceScheduled = NO;
@@ -232,26 +228,24 @@ BOOL AEAudioFilePlayerModuleGetPlaying(__unsafe_unretained AEAudioFilePlayerModu
 }
 
 - (void)setupMainThreadEndpoint {
-    __weak AEAudioFilePlayerModule * weakSelf = self;
+    __unsafe_unretained AEAudioFilePlayerModule * weakSelf = self;
     self.mainThreadEndpointValue.objectValue
             = [[AEMainThreadEndpoint alloc] initWithHandler:^(const void * data, size_t length) {
-        AEAudioFilePlayerModule * self = weakSelf;
-        
-        if ( self.beginBlock && self->_anchorTime != 0 ) {
-            self.beginBlock();
-            self.beginBlock = nil;
-            if ( !self.completionBlock || self.loop ) {
-                self.mainThreadEndpointValue.objectValue = nil;
+        if ( weakSelf.beginBlock && weakSelf->_anchorTime != 0 ) {
+            weakSelf.beginBlock();
+            weakSelf.beginBlock = nil;
+            if ( !weakSelf.completionBlock || weakSelf.loop ) {
+                weakSelf.mainThreadEndpointValue.objectValue = nil;
             }
         }
         
-        if ( self->_stopEventScheduled ) {
-            self->_stopEventScheduled = NO;
-            AECheckOSStatus(AudioUnitReset(self.audioUnit, kAudioUnitScope_Global, 0), "AudioUnitReset");
-            self->_sequenceScheduled = NO;
-            self->_playing = NO;
-            if ( self.completionBlock ) self.completionBlock();
-            self.mainThreadEndpointValue.objectValue = nil;
+        if ( weakSelf->_stopEventScheduled ) {
+            weakSelf->_stopEventScheduled = NO;
+            AECheckOSStatus(AudioUnitReset(weakSelf.audioUnit, kAudioUnitScope_Global, 0), "AudioUnitReset");
+            weakSelf->_sequenceScheduled = NO;
+            weakSelf->_playing = NO;
+            if ( weakSelf.completionBlock ) weakSelf.completionBlock();
+            weakSelf.mainThreadEndpointValue.objectValue = nil;
         }
     }];
 }
@@ -438,26 +432,32 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
     }
     
     AudioUnit audioUnit = AEAudioUnitModuleGetAudioUnit(THIS);
-    AEHostTicks startTime = THIS->_startTime;
+    AudioTimeStamp startTime = THIS->_startTime;
     double playhead = THIS->_playhead;
     
     // Check start time
     AEHostTicks hostTimeAtBufferEnd
         = context->timestamp->mHostTime + AEHostTicksFromSeconds((double)context->frames / context->sampleRate);
-    if ( startTime && startTime > hostTimeAtBufferEnd ) {
+    UInt32 sampleTimeAtBufferEnd = context->timestamp->mSampleTime + context->frames;
+    
+    if ( (startTime.mFlags & kAudioTimeStampHostTimeValid && startTime.mHostTime > hostTimeAtBufferEnd)
+           || (startTime.mFlags & kAudioTimeStampSampleTimeValid && startTime.mSampleTime > sampleTimeAtBufferEnd) ) {
         // Start time not yet reached: emit silence
         AEAudioBufferListSilence(abl, 0, context->frames);
         return;
         
-    } else if ( startTime && startTime < context->timestamp->mHostTime ) {
+    } else if ( (startTime.mFlags & kAudioTimeStampHostTimeValid && startTime.mHostTime < context->timestamp->mHostTime)
+           || (startTime.mFlags & kAudioTimeStampSampleTimeValid && startTime.mSampleTime < context->timestamp->mSampleTime) ) {
         // Start time is in the past - we need to skip some frames
-        AEHostTicks skipTime = context->timestamp->mHostTime - startTime;
-        UInt32 skipFrames = round(AESecondsFromHostTicks(skipTime) * context->sampleRate);
+        UInt32 skipFrames =
+            startTime.mFlags & kAudioTimeStampHostTimeValid ?
+                round(AESecondsFromHostTicks(context->timestamp->mHostTime - startTime.mHostTime) * context->sampleRate)
+                : context->timestamp->mSampleTime - startTime.mSampleTime;
         playhead += (double)skipFrames * (THIS->_fileSampleRate / context->sampleRate);
         AudioTimeStamp timestamp = {
-            .mFlags = kAudioTimeStampSampleTimeValid|kAudioTimeStampHostTimeValid,
+            .mFlags = startTime.mFlags | kAudioTimeStampSampleTimeValid,
             .mSampleTime = context->timestamp->mSampleTime - skipFrames,
-            .mHostTime = startTime
+            .mHostTime = startTime.mHostTime
         };
         
         AEAudioBufferListCopyOnStack(scratch, abl, 0);
@@ -477,12 +477,16 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
         }
     }
     
-    THIS->_startTime = 0;
+    THIS->_startTime = AETimeStampNone;
     
     // Prepare buffer
     UInt32 frames = context->frames;
-    UInt32 silentFrames = startTime && startTime > context->timestamp->mHostTime
-        ? round(AESecondsFromHostTicks(startTime - context->timestamp->mHostTime) * context->sampleRate) : 0;
+    UInt32 silentFrames =
+        (startTime.mFlags & kAudioTimeStampHostTimeValid && startTime.mHostTime > context->timestamp->mHostTime)
+         ? round(AESecondsFromHostTicks(startTime.mHostTime - context->timestamp->mHostTime) * context->sampleRate)
+        : (startTime.mFlags & kAudioTimeStampSampleTimeValid && startTime.mSampleTime > context->timestamp->mSampleTime)
+         ? startTime.mSampleTime - context->timestamp->mSampleTime
+        : 0;
     AEAudioBufferListCopyOnStack(mutableAbl, abl, silentFrames);
     AudioTimeStamp adjustedTime = *context->timestamp;
     
@@ -492,7 +496,7 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
         // Point buffer list to remaining frames
         abl = mutableAbl;
         frames -= silentFrames;
-        adjustedTime.mHostTime = startTime;
+        adjustedTime.mHostTime += AEHostTicksFromSeconds((double)silentFrames / context->sampleRate);
         adjustedTime.mSampleTime += silentFrames;
     }
     
@@ -596,14 +600,4 @@ static void AEAudioFilePlayerModuleProcess(__unsafe_unretained AEAudioFilePlayer
     }
 }
 
-@end
-
-@implementation AEAudioFilePlayerModuleWeakProxy
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
-    return [_target methodSignatureForSelector:selector];
-}
-- (void)forwardInvocation:(NSInvocation *)invocation {
-    [invocation setTarget:_target];
-    [invocation invoke];
-}
 @end

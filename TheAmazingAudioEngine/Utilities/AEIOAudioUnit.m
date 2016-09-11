@@ -31,6 +31,7 @@
 #import "AETime.h"
 #import "AEManagedValue.h"
 #import "AEAudioBufferListUtilities.h"
+#import "AEDSPUtilities.h"
 #import <AVFoundation/AVFoundation.h>
 
 NSString * const AEIOAudioUnitDidUpdateStreamFormatNotification = @"AEIOAudioUnitDidUpdateStreamFormatNotification";
@@ -43,6 +44,8 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
 @property (nonatomic, readwrite) int numberOfOutputChannels;
 @property (nonatomic, readwrite) int numberOfInputChannels;
 @property (nonatomic) AudioTimeStamp inputTimestamp;
+@property (nonatomic) BOOL needsInputGainScaling;
+@property (nonatomic) float currentInputGain;
 #if TARGET_OS_IPHONE
 @property (nonatomic, strong) id sessionInterruptionObserverToken;
 @property (nonatomic, strong) id mediaResetObserverToken;
@@ -64,6 +67,10 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
     
     _outputEnabled = YES;
     self.renderBlockValue = [AEManagedValue new];
+    
+    _currentInputGain = _inputGain = 1.0;
+    
+    AETimeInit();
     
     return self;
 }
@@ -99,8 +106,7 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
 #if TARGET_OS_IPHONE
     acd = AEAudioComponentDescriptionMake(kAudioUnitManufacturer_Apple, kAudioUnitType_Output, kAudioUnitSubType_RemoteIO);
 #else
-    acd = AEAudioComponentDescriptionMake(kAudioUnitManufacturer_Apple, kAudioUnitType_Output,
-                                          self.outputEnabled ? kAudioUnitSubType_DefaultOutput : kAudioUnitSubType_HALOutput);
+    acd = AEAudioComponentDescriptionMake(kAudioUnitManufacturer_Apple, kAudioUnitType_Output, kAudioUnitSubType_HALOutput);
 #endif
     
     AudioComponent inputComponent = AudioComponentFindNext(NULL, &acd);
@@ -173,7 +179,7 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
                     "AudioUnitAddPropertyListener(kAudioUnitProperty_StreamFormat)");
     
 #if TARGET_OS_IPHONE
-    __weak AEIOAudioUnit * weakSelf = self;
+    __weak typeof(self) weakSelf = self;
     
     // Watch for session interruptions
     __block BOOL wasRunning;
@@ -207,6 +213,7 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
     {
         weakSelf.outputLatency = [AVAudioSession sharedInstance].outputLatency;
         weakSelf.inputLatency = [AVAudioSession sharedInstance].inputLatency;
+        weakSelf.inputGain = weakSelf.inputGain;
     }];
 #endif
     
@@ -244,6 +251,7 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
     
     self.outputLatency = [AVAudioSession sharedInstance].outputLatency;
     self.inputLatency = [AVAudioSession sharedInstance].inputLatency;
+    self.inputGain = self.inputGain;
 #endif
     
     [self updateStreamFormat];
@@ -266,40 +274,46 @@ NSString * const AEIOAudioUnitDidSetupNotification = @"AEIOAudioUnitDidSetupNoti
     AECheckOSStatus(AudioOutputUnitStop(_audioUnit), "AudioOutputUnitStop");
 }
 
-AudioUnit _Nonnull AEIOAudioUnitGetAudioUnit(__unsafe_unretained AEIOAudioUnit * _Nonnull self) {
-    return self->_audioUnit;
+AudioUnit _Nonnull AEIOAudioUnitGetAudioUnit(__unsafe_unretained AEIOAudioUnit * _Nonnull THIS) {
+    return THIS->_audioUnit;
 }
 
-OSStatus AEIOAudioUnitRenderInput(__unsafe_unretained AEIOAudioUnit * _Nonnull self,
+OSStatus AEIOAudioUnitRenderInput(__unsafe_unretained AEIOAudioUnit * _Nonnull THIS,
                                   const AudioBufferList * _Nonnull buffer, UInt32 frames) {
     
-    if ( !self->_inputEnabled || self->_numberOfInputChannels == 0 ) {
+    if ( !THIS->_inputEnabled || THIS->_numberOfInputChannels == 0 ) {
         AEAudioBufferListSilence(buffer, 0, frames);
         return 0;
     }
     
     AudioUnitRenderActionFlags flags = 0;
-    AudioTimeStamp timestamp = self->_inputTimestamp;
+    AudioTimeStamp timestamp = THIS->_inputTimestamp;
     AEAudioBufferListCopyOnStack(mutableAbl, buffer, 0);
-    return AudioUnitRender(self->_audioUnit, &flags, &timestamp, 1, frames, mutableAbl);
+    OSStatus status = AudioUnitRender(THIS->_audioUnit, &flags, &timestamp, 1, frames, mutableAbl);
+    AECheckOSStatus(status, "AudioUnitRender");
+    if ( status == noErr && THIS->_needsInputGainScaling &&
+            (fabs(THIS->_inputGain - 1.0) > 1.0e-5 || fabs(THIS->_inputGain - THIS->_currentInputGain) > 1.0e-5) ) {
+        AEDSPApplyGainSmoothed(mutableAbl, THIS->_inputGain, &THIS->_currentInputGain, frames);
+    }
+    return status;
 }
 
-AudioTimeStamp AEIOAudioUnitGetInputTimestamp(__unsafe_unretained AEIOAudioUnit * _Nonnull self) {
-    return self->_inputTimestamp;
+AudioTimeStamp AEIOAudioUnitGetInputTimestamp(__unsafe_unretained AEIOAudioUnit * _Nonnull THIS) {
+    return THIS->_inputTimestamp;
 }
 
-double AEIOAudioUnitGetSampleRate(__unsafe_unretained AEIOAudioUnit * _Nonnull self) {
-    return self->_currentSampleRate;
+double AEIOAudioUnitGetSampleRate(__unsafe_unretained AEIOAudioUnit * _Nonnull THIS) {
+    return THIS->_currentSampleRate;
 }
 
 #if TARGET_OS_IPHONE
 
-AESeconds AEIOAudioUnitGetInputLatency(__unsafe_unretained AEIOAudioUnit * _Nonnull self) {
-    return self->_inputLatency;
+AESeconds AEIOAudioUnitGetInputLatency(__unsafe_unretained AEIOAudioUnit * _Nonnull THIS) {
+    return THIS->_inputLatency;
 }
 
-AESeconds AEIOAudioUnitGetOutputLatency(__unsafe_unretained AEIOAudioUnit * _Nonnull self) {
-    return self->_outputLatency;
+AESeconds AEIOAudioUnitGetOutputLatency(__unsafe_unretained AEIOAudioUnit * _Nonnull THIS) {
+    return THIS->_outputLatency;
 }
 
 #endif
@@ -397,6 +411,32 @@ AESeconds AEIOAudioUnitGetOutputLatency(__unsafe_unretained AEIOAudioUnit * _Non
     }
 }
 
+- (void)setInputGain:(double)inputGain {
+    _inputGain = inputGain;
+    
+#if TARGET_OS_IPHONE
+    AVAudioSession * audioSession = [AVAudioSession sharedInstance];
+    
+    // Try to set the hardware gain; zero seems to still be audible, though, so we'll bypass for that
+    if ( audioSession.inputGainSettable && inputGain > 0 ) {
+        // AVAudioSession's gain seems to be logarithmic, so we'll do a little rough scaling on the input values (power ratio)
+        double gain = inputGain > 1.0-1.0e-5 ? 1.0 : 1.0 - (AEDSPRatioToDecibels(inputGain) / -30.0);
+        NSError * error = nil;
+        if ( ![audioSession setInputGain:gain error:&error] ) {
+            NSLog(@"Couldn't set input gain: %@", error);
+            [audioSession setInputGain:1.0 error:NULL];
+            _needsInputGainScaling = YES;
+        } else {
+            _needsInputGainScaling = inputGain > 1.0+1.0e-5;
+        }
+    } else {
+        _needsInputGainScaling = YES;
+    }
+#else
+    _needsInputGainScaling = YES;
+#endif
+}
+
 - (int)numberOfInputChannels {
     if ( _audioUnit && _numberOfInputChannels ) return _numberOfInputChannels;
     
@@ -472,6 +512,7 @@ AESeconds AEIOAudioUnitGetOutputLatency(__unsafe_unretained AEIOAudioUnit * _Non
 static OSStatus AEIOAudioUnitRenderCallback(void *inRefCon, AudioUnitRenderActionFlags *ioActionFlags,
                                             const AudioTimeStamp *inTimeStamp, UInt32 inBusNumber,
                                             UInt32 inNumberFrames, AudioBufferList *ioData) {
+    
     // Render
     __unsafe_unretained AEIOAudioUnit * THIS = (__bridge AEIOAudioUnit *)inRefCon;
     
@@ -487,6 +528,8 @@ static OSStatus AEIOAudioUnitRenderCallback(void *inRefCon, AudioUnitRenderActio
         = (__bridge AEIOAudioUnitRenderBlock)AEManagedValueGetValue(THIS->_renderBlockValue);
     if ( renderBlock ) {
         renderBlock(ioData, inNumberFrames, &timestamp);
+    } else {
+        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
     }
     
     return noErr;
@@ -543,7 +586,7 @@ static void AEIOAudioUnitStreamFormatChanged(void *inRefCon, AudioUnit inUnit, A
             hasChanges = YES;
         }
         
-        if ( self.numberOfOutputChannels != (int)asbd.mChannelsPerFrame ) {
+        if ( _numberOfOutputChannels != (int)asbd.mChannelsPerFrame ) {
             hasChanges = YES;
             self.numberOfOutputChannels = asbd.mChannelsPerFrame;
         } else {
@@ -568,7 +611,7 @@ static void AEIOAudioUnitStreamFormatChanged(void *inRefCon, AudioUnit inUnit, A
                         "AudioUnitGetProperty(kAudioUnitProperty_StreamFormat)");
         
         int channels = MIN(asbd.mChannelsPerFrame, self.maximumInputChannels);
-        if ( self.numberOfInputChannels != (int)channels ) {
+        if ( _numberOfInputChannels != (int)channels ) {
             hasChanges = YES;
             self.numberOfInputChannels = channels;
         } else {
@@ -636,7 +679,7 @@ static void AEIOAudioUnitStreamFormatChanged(void *inRefCon, AudioUnit inUnit, A
     AudioStreamBasicDescription asbd;
     UInt32 size = sizeof(asbd);
     AudioObjectPropertyAddress addr = { kAudioDevicePropertyStreamFormat, scope, 0 };
-    if ( !AECheckOSStatus(AudioObjectGetPropertyData(deviceId, &addr, 0, NULL, &size, &deviceId),
+    if ( !AECheckOSStatus(AudioObjectGetPropertyData(deviceId, &addr, 0, NULL, &size, &asbd),
                           "AudioObjectGetPropertyData") ) {
         return (AudioStreamBasicDescription){};
     }

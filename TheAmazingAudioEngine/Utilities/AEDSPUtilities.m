@@ -13,6 +13,8 @@ static const UInt32 kMaxFramesPerSlice = 4096;
 static const UInt32 kGainSmoothingRampDuration = 128;
 static const float kGainSmoothingRampStep = 1.0 / kGainSmoothingRampDuration;
 static const float kSmoothGainThreshold = kGainSmoothingRampStep;
+static const UInt32 kMinRampDurationForPowerCurve = 8192;
+static const float kPowerCurvePower = 3.0;
 
 void AEDSPApplyGain(const AudioBufferList * bufferList, float gain, UInt32 frames) {
     for ( int i=0; i < bufferList->mNumberBuffers; i++ ) {
@@ -59,23 +61,47 @@ void AEDSPApplyEqualPowerRamp(const AudioBufferList * bufferList, float * start,
 }
 
 void AEDSPApplyGainSmoothed(const AudioBufferList * bufferList, float targetGain, float * currentGain, UInt32 frames) {
+    AEDSPApplyGainWithRamp(bufferList, targetGain, currentGain, frames, 0);
+}
+
+void AEDSPApplyGainWithRamp(const AudioBufferList * bufferList, float targetGain, float * currentGain, UInt32 frames,
+                                    UInt32 rampDuration) {
+    
     float diff = fabsf(targetGain - *currentGain);
     if ( diff > kSmoothGainThreshold ) {
         // Need to apply ramp
-        UInt32 rampDuration = MIN(diff * kGainSmoothingRampDuration, frames);
-        float step = targetGain > *currentGain ? kGainSmoothingRampStep : -kGainSmoothingRampStep;
-        AEDSPApplyRamp(bufferList, currentGain, step, rampDuration);
+        UInt32 duration = MIN(diff * (rampDuration ? rampDuration : kGainSmoothingRampDuration), frames);
+        float step = (targetGain > *currentGain ? 1.0 : -1.0) * (rampDuration ? 1.0/rampDuration : kGainSmoothingRampStep);
         
-        if ( rampDuration < frames && targetGain < 1.0-FLT_EPSILON ) {
+        if ( rampDuration > kMinRampDurationForPowerCurve ) {
+            // We're going to use a power function curve for more linear-sounding transitions.
+            // Invert power function to get current t
+            float t = powf(*currentGain, 1.0/kPowerCurvePower);
+            
+            // Calculate target for this segment
+            float localTarget = powf(t + (step * duration), kPowerCurvePower);
+            
+            // Calculate step
+            step = (localTarget - *currentGain) / (float)duration;
+        }
+        
+        AEDSPApplyRamp(bufferList, currentGain, step, duration);
+        
+        if ( duration < frames && fabsf(targetGain - 1.0f) > FLT_EPSILON ) {
             // Apply constant gain, now, with offset
+            *currentGain = targetGain;
             for ( int i=0; i < bufferList->mNumberBuffers; i++ ) {
-                vDSP_vsmul((float*)bufferList->mBuffers[i].mData + rampDuration, 1, &targetGain,
-                           (float*)bufferList->mBuffers[i].mData + rampDuration, 1, frames - rampDuration);
+                vDSP_vsmul((float*)bufferList->mBuffers[i].mData + duration, 1, &targetGain,
+                           (float*)bufferList->mBuffers[i].mData + duration, 1, frames - duration);
             }
         }
-    } else if ( targetGain < 1.0-FLT_EPSILON ) {
-        // Just apply gain
-        AEDSPApplyGain(bufferList, targetGain, frames);
+    } else {
+        *currentGain = targetGain;
+        
+        if ( fabsf(targetGain - 1.0f) > FLT_EPSILON ) {
+            // Just apply gain
+            AEDSPApplyGain(bufferList, targetGain, frames);
+        }
     }
 }
 
@@ -87,14 +113,14 @@ void AEDSPApplyGainSmoothedMono(float * buffer, float targetGain, float * curren
         float step = targetGain > *currentGain ? kGainSmoothingRampStep : -kGainSmoothingRampStep;
         vDSP_vrampmul(buffer, 1, currentGain, &step, buffer, 1, rampDuration);
         
-        if ( rampDuration < frames && targetGain < 1.0-FLT_EPSILON ) {
+        if ( rampDuration < frames && fabsf(targetGain - 1.0f) > FLT_EPSILON ) {
             // Apply constant gain, now, with offset
             vDSP_vsmul(buffer + rampDuration, 1, &targetGain, buffer + rampDuration, 1, frames - rampDuration);
         }
     } else if ( targetGain < FLT_EPSILON ) {
         // Zero
         vDSP_vclr(buffer, 1, frames);
-    } else if ( targetGain < 1.0-FLT_EPSILON ) {
+    } else if ( fabsf(targetGain - 1.0f) > FLT_EPSILON ) {
         // Just apply gain
         vDSP_vsmul(buffer, 1, &targetGain, buffer, 1, frames);
     }

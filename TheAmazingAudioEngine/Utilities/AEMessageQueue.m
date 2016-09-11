@@ -30,10 +30,10 @@
 
 AEArgument AEArgumentNone = {NO, NULL, 0};
 
-typedef enum {
+typedef NS_ENUM(NSInteger, AEMessageQueueMessageType) {
     AEMessageQueueMainThreadMessage,
     AEMessageQueueAudioThreadMessage,
-} AEMessageQueueMessageType;
+};
 
 // Audio thread message type
 typedef struct {
@@ -113,11 +113,11 @@ typedef struct {
         } else if ( *type == AEMessageQueueAudioThreadMessage ) {
             // Clean up audio thread message, and possibly call completion block
             const audio_thread_message_t * message = (const audio_thread_message_t *)data;
-            CFRelease((__bridge CFTypeRef)(message->block));
+            CFBridgingRelease((__bridge CFTypeRef)(message->block));
             
             if ( message->completionBlock ) {
                 message->completionBlock();
-                CFRelease((__bridge CFTypeRef)(message->completionBlock));
+                CFBridgingRelease((__bridge CFTypeRef)(message->completionBlock));
             }
         }
     } bufferCapacity:bufferCapacity];
@@ -133,8 +133,6 @@ typedef struct {
         AEMainThreadEndpointSend(mainThread, data, length);
     } bufferCapacity:bufferCapacity];
     
-    _pollInterval = self.mainThreadEndpoint.pollInterval;
-    
     return self;
 }
 
@@ -146,8 +144,8 @@ typedef struct {
     // Prepare message
     audio_thread_message_t message = {
         .type = AEMessageQueueAudioThreadMessage,
-        .block = CFRetain((__bridge CFTypeRef)[block copy]),
-        .completionBlock = completionBlock ? CFRetain((__bridge CFTypeRef)[completionBlock copy]) : NULL,
+        .block = (__bridge id)CFBridgingRetain([block copy]),
+        .completionBlock = completionBlock ? (__bridge id)CFBridgingRetain([completionBlock copy]) : NULL,
     };
     
     // Dispatch
@@ -231,11 +229,6 @@ BOOL AEMessageQueuePerformSelectorOnMainThread(__unsafe_unretained AEMessageQueu
 
 void AEMessageQueuePoll(__unsafe_unretained AEMessageQueue * _Nonnull THIS) {
     AEAudioThreadEndpointPoll(THIS->_audioThreadEndpoint);
-}
-
-- (void)setPollInterval:(AESeconds)pollInterval {
-    _pollInterval = pollInterval;
-    self.mainThreadEndpoint.pollInterval = pollInterval;
 }
 
 @end
